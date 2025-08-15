@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import QLabel
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRect
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRect, QRectF
 from pathlib import Path
 from Controller.enums import MouseStatus
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QBrush  # <-- QBrush dazu
@@ -23,6 +23,8 @@ class ImageDropArea(QLabel):
 
     pointAdded = pyqtSignal(float, float)
 
+    deleteRect = pyqtSignal(float, float, float, float)
+
     def __init__(self, placeholder: str = "Drag & Drop the image here"):
         # Initialize the default (start-up)
         super().__init__(placeholder)
@@ -42,7 +44,14 @@ class ImageDropArea(QLabel):
 
         self._points: list[QPointF] = []
         self._points_color = QColor(0, 0, 255)
-        self._points_radius = 5
+        self._points_radius = 2
+
+        self._del_active: bool = False
+        self._del_start_img: QPointF | None = None
+        self._del_cur_img: QPointF | None = None
+        # Optics of the delet-Rect
+        self._rect_pen = QPen(QColor(0, 255, 0), 1, Qt.PenStyle.DashLine)
+        self._rect_brush = QBrush(QColor(0, 255, 0, 40))
 
     # ---- Drag & Drop ----
     def dragEnterEvent(self, event):
@@ -186,6 +195,16 @@ class ImageDropArea(QLabel):
                 self.segDrawStart.emit(img_pt.x(), img_pt.y())
                 e.accept(); return
 
+        if self._status == MouseStatus.DEL_STR and self._pixmap and e.button() == Qt.MouseButton.LeftButton:
+            img_pt = self._widget_to_image(e.position())
+            if img_pt is not None:
+                self._del_active = True
+                self._del_start_img = img_pt
+                self._del_cur_img = img_pt
+                self.update()  # Rechteck-Vorschau anzeigen
+                e.accept();
+                return
+
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
@@ -198,6 +217,16 @@ class ImageDropArea(QLabel):
                 self.segDrawMove.emit(img_pt.x(), img_pt.y())
                 e.accept()
                 return
+
+        if self._status == MouseStatus.DEL_STR and self._pixmap and self._del_active and (
+                e.buttons() & Qt.MouseButton.LeftButton):
+            img_pt = self._widget_to_image(e.position())
+            if img_pt is not None:
+                self._del_cur_img = img_pt
+                self.update()
+                e.accept()
+                return
+
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
@@ -209,19 +238,36 @@ class ImageDropArea(QLabel):
                 self.segDrawEnd.emit(img_pt.x(), img_pt.y())
             e.accept()
             return
+
+        if self._status == MouseStatus.DEL_STR and self._del_active and e.button() == Qt.MouseButton.LeftButton:
+            self._del_active = False
+            if self._del_start_img is not None and self._del_cur_img is not None:
+                x1, y1 = self._del_start_img.x(), self._del_start_img.y()
+                x2, y2 = self._del_cur_img.x(), self._del_cur_img.y()
+                self.deleteRect.emit(x1, y1, x2, y2)  # an Controller
+            # Rechteck-Auswahl ausblenden
+            self._del_start_img = None
+            self._del_cur_img = None
+            self.update()
+            e.accept()
+            return
+
         super().mouseReleaseEvent(e)
 
     # Paint
     def paintEvent(self, e):
         super().paintEvent(e)
-        # Draw Seg
+
         if not self._pixmap:
             return
+
         rect = self._target_rect()
         if rect.width() <= 0 or rect.height() <= 0:
             return
+
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # Draw Seg
         p.setPen(QPen(self._overlay_color, self._overlay_width))
         last = None
         for pt_img in self._seg_points:
@@ -238,6 +284,19 @@ class ImageDropArea(QLabel):
             for pt_img in self._points:
                 wpt = self._image_to_widget(pt_img, rect)
                 p.drawEllipse(wpt, r, r)
+
+        # 3) Aktives Löschrechteck (nur während Drag)
+        if self._del_active and self._del_start_img and self._del_cur_img:
+            a = self._image_to_widget(self._del_start_img, rect)
+            b = self._image_to_widget(self._del_cur_img, rect)
+            x = min(a.x(), b.x())
+            y = min(a.y(), b.y())
+            w = abs(a.x() - b.x())
+            h = abs(a.y() - b.y())
+            r = QRectF(x, y, w, h)
+            p.setPen(self._rect_pen)
+            p.setBrush(self._rect_brush)
+            p.drawRect(r)
 
         p.end()
 

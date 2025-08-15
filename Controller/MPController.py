@@ -120,6 +120,52 @@ class ImageController(QObject):
         v.dropHighRes.pointAdded.connect(self._hr_point_added)  # <-- neu
         v.dropHighRes.pointAdded.connect(lambda x, y: print(f"[Signal] point ({x:.1f}, {y:.1f})"))  # Console-Log
 
+        # Delete Structures
+        delStrBtn = v.topLeftPanel.toolbarButtons.get("Del Str")
+        if delStrBtn:
+            delStrBtn.clicked.connect(self.HR_del_str_activate)
+        # Rechteck-Ergebnis aus der DropArea anhören:
+        v.dropHighRes.deleteRect.connect(self._hr_delete_rect)
+
+    # Delete functionality
+    def HR_del_str_activate(self):
+        print("Del Str clicked!")
+        self.status = MouseStatus.DEL_STR
+        drop = self.view.dropHighRes
+        if drop:
+            drop.set_mouse_status(MouseStatus.DEL_STR)
+            drop.set_draw_cursor(True)  # Crosshair ist praktisch
+        # nichts löschen, vorhandene Strukturen bleiben sichtbar
+
+    def _hr_delete_rect(self, x1: float, y1: float, x2: float, y2: float):
+        # Normalisieren
+        xmin, xmax = (x1, x2) if x1 <= x2 else (x2, x1)
+        ymin, ymax = (y1, y2) if y1 <= y2 else (y2, y1)
+
+        st = self.states["highres"]
+
+        # Punkte: alle innerhalb löschen
+        before_pts = len(st.pts_points)
+        st.pts_points = [
+            (x, y) for (x, y) in st.pts_points
+            if not (xmin <= x <= xmax and ymin <= y <= ymax)
+        ]
+
+        # Segmentation: nur löschen, wenn *alle* Punkte im Rechteck liegen
+        seg_deleted = False
+        if st.seg_points:
+            if all(xmin <= x <= xmax and ymin <= y <= ymax for (x, y) in st.seg_points):
+                st.seg_points.clear()
+                seg_deleted = True
+
+        # View updaten
+        drop = self.view.dropHighRes
+        drop.set_points(st.pts_points)
+        drop.set_segmentation(st.seg_points)
+
+        print(f"[HighRes] DeleteRect ({xmin:.1f},{ymin:.1f})-({xmax:.1f},{ymax:.1f}) -> "
+              f"removed {before_pts - len(st.pts_points)} pts{' + seg' if seg_deleted else ''}")
+
     # Draw Points Functions
     def HR_draw_pts_activate(self):  # <-- neu
         print("Draw Pts clicked!")
