@@ -7,6 +7,9 @@ from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool, QRunnable, QTimer
 from PyQt6.QtGui import QImage, QImageReader
 from Controller.enums import MouseStatus
 import math
+from Model.annotations import PanelAnnotations, AnnotationsBundle
+from Model.grid_compute import GridComputer, GridResult
+from pprint import pformat
 
 # --- Model ---
 @dataclass
@@ -90,6 +93,9 @@ class ImageController(QObject):
             "highres": None, "sd": None, "micro": None
         }
         self._wire_view()
+
+        self.compute_sig = _ComputeSignal()
+        self.compute_sig.finished.connect(self._on_compute_finished)
 
     # Status and Panel Activation - helper methods
     def _set_status(self, panel_id: str, status: MouseStatus, *, cursor=True):
@@ -185,6 +191,10 @@ class ImageController(QObject):
 
         v.dropMicro.pointAdded.connect(lambda x, y: self._point_added("micro", x, y))
         v.dropMicro.deleteRect.connect(lambda x1, y1, x2, y2: self._delete_rect("micro", x1, y1, x2, y2))
+
+        btn = v.bottomRightPanel.toolbarButtons.get("Compute Grids")
+        if btn:
+            btn.clicked.connect(self._on_compute_grids_clicked)
 
 
     # Edit Segmentation Functionality
@@ -413,7 +423,16 @@ class ImageController(QObject):
         return {"highres": v.dropHighRes, "sd": v.dropSD, "micro": v.dropMicro}.get(panel_id)
 
     def _on_compute_grids_clicked(self):
-        print("[Controller] Compute Grids – später implementieren")
+        print("[Compute] Button pressed")
+        self.dump_all_lists()  # <- komplette Listen in die Konsole
+
+        bundle = AnnotationsBundle(
+            highres=self._snapshot_panel("highres"),
+            sd=self._snapshot_panel("sd"),
+            micro=PanelAnnotations(seg=[], points=self.states["micro"].pts_points.copy())
+        )
+        task = _ComputeTask(bundle, self.compute_sig)
+        self.pool.start(task)
 
     # Helper Functions
     def _euclid(self, a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -474,4 +493,74 @@ class ImageController(QObject):
             w_list.append(w)
 
         return idx_list, w_list
+
+    # For Computational matters
+
+    def _snapshot_panel(self, panel_id: str) -> PanelAnnotations:
+        st = self.states[panel_id]
+        # flache Kopien reichen (Tuple sind unveränderlich)
+        return PanelAnnotations(
+            seg=st.seg_points.copy(),
+            points=st.pts_points.copy()
+        )
+
+    def _on_compute_grids_clicked(self):
+        # 1) Einsammeln
+        bundle = AnnotationsBundle(
+            highres=self._snapshot_panel("highres"),
+            sd=self._snapshot_panel("sd"),
+            micro=PanelAnnotations(seg=[], points=self.states["micro"].pts_points.copy())
+        )
+        # 2) (Optional) Validieren
+        # z.B. sicherstellen, dass hr/sd Seg vorhanden sind:
+        # if not bundle.highres.seg or not bundle.sd.seg:
+        #     print("[Compute] missing segmentation"); return
+
+        # 3) Im ThreadPool rechnen (UI bleibt frei)
+        task = _ComputeTask(bundle, self.compute_sig)
+        self.pool.start(task)
+
+    def _on_compute_finished(self, res: GridResult):
+        # Ergebnis entgegennehmen und an die View geben
+        # (aktuell nur Debug-Ausgabe; hier könntest du unten rechts etwas rendern)
+        print("[Compute] Done:", res.message, res.debug)
+        # Beispiel: Statuszeile, Dialog, oder Inhalte im bottomRightPanel aktualisieren
+
+    from pprint import pformat
+
+    def _round_pts(self, pts, nd=2):
+        return [(round(x, nd), round(y, nd)) for (x, y) in pts]
+
+    def dump_all_lists(self, nd: int = 2):
+        def fmt(pts):
+            return [(round(x, nd), round(y, nd)) for (x, y) in pts]
+
+        print("\n===== DEBUG: Annotation-Listen =====")
+        for pid, st in self.states.items():
+            seg = fmt(st.seg_points)
+            pts = fmt(st.pts_points)
+
+            print(f"[{pid}] seg_points ({len(seg)}):")
+            for i, (x, y) in enumerate(seg):
+                print(f"    {i:3d}: ({x:.{nd}f}, {y:.{nd}f})")
+
+            print(f"[{pid}] pts_points ({len(pts)}):")
+            for i, (x, y) in enumerate(pts):
+                print(f"    {i:3d}: ({x:.{nd}f}, {y:.{nd}f})")
+        print("====================================\n")
+
+# For computation
+class _ComputeSignal(QObject):
+    finished = pyqtSignal(object)  # GridResult
+
+class _ComputeTask(QRunnable):
+    def __init__(self, bundle: AnnotationsBundle, sig: _ComputeSignal):
+        super().__init__()
+        self.bundle = bundle
+        self.sig = sig
+
+    def run(self):
+        comp = GridComputer()
+        res = comp.compute(self.bundle)
+        self.sig.finished.emit(res)
 

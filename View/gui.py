@@ -112,7 +112,7 @@ class MicroPerimetryGUI(QWidget):
 
         # Compute Buttoms
         self.bottomRightPanel.add_toolbar_buttons({
-            "Draw Pts": self._btn("Compute Grids"),
+            "Compute Grids": self._btn("Compute Grids"),
             "Reset": self._btn("Reset")
         })
 
