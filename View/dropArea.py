@@ -126,6 +126,7 @@ class ImageDropArea(QLabel):
         self.setProperty("dragActive", False)
 
         self.setPixmap(QPixmap())  # <<< wichtig: internes QLabel-Pixmap leeren
+        self.imageDropped.emit(path)  # <--- zurück!
         self.setText("")
         self.update()
 
@@ -193,11 +194,15 @@ class ImageDropArea(QLabel):
         return False
 
     def show_qimage(self, qimg: QImage):
-        self._reset_view()
-        self.setPixmap(QPixmap())  # <<< wichtig
+        # Hier WIRKLICH das Bild übernehmen – aber Zoom/Center NICHT resetten,
+        # sonst "springen" Slider/Reset/Zoom.
+        if qimg.isNull():
+            return
+        self._pixmap = QPixmap.fromImage(qimg)
+        if self._center is None:
+            self._reset_view()  # nur beim allerersten Bild
         self.setText("")
         self.update()
-        return True
 
     # Mouse Actions
     def mousePressEvent(self, e):
@@ -220,12 +225,15 @@ class ImageDropArea(QLabel):
                 e.accept(); return
 
         if self._status == MouseStatus.DEL_STR and self._pixmap and e.button() == Qt.MouseButton.LeftButton:
-            img_pt = self._widget_to_image(e.position())
+            print(f"[{self.objectName()}] DEL_PRESS at widget=({e.position().x():.1f},{e.position().y():.1f})")
+            img_pt = self._widget_to_image(e.position(), allow_outside=True)
+            print(
+                f"[{self.objectName()}]   -> img_pt={None if img_pt is None else (round(img_pt.x(), 1), round(img_pt.y(), 1))}")
             if img_pt is not None:
                 self._del_active = True
                 self._del_start_img = img_pt
                 self._del_cur_img = img_pt
-                self.update()  # Rechteck-Vorschau anzeigen
+                self.update()
                 e.accept()
                 return
 
@@ -254,9 +262,10 @@ class ImageDropArea(QLabel):
 
         if self._status == MouseStatus.DEL_STR and self._pixmap and self._del_active and (
                 e.buttons() & Qt.MouseButton.LeftButton):
-            img_pt = self._widget_to_image(e.position())
+            img_pt = self._widget_to_image(e.position(), allow_outside=True)
             if img_pt is not None:
                 self._del_cur_img = img_pt
+                print(f"[{self.objectName()}] DEL_MOVE img=({img_pt.x():.1f},{img_pt.y():.1f})")  # optional
                 self.update()
                 e.accept()
                 return
@@ -283,12 +292,13 @@ class ImageDropArea(QLabel):
             return
 
         if self._status == MouseStatus.DEL_STR and self._del_active and e.button() == Qt.MouseButton.LeftButton:
+            print(f"[{self.objectName()}] DEL_RELEASE")
             self._del_active = False
             if self._del_start_img is not None and self._del_cur_img is not None:
                 x1, y1 = self._del_start_img.x(), self._del_start_img.y()
                 x2, y2 = self._del_cur_img.x(), self._del_cur_img.y()
-                self.deleteRect.emit(x1, y1, x2, y2)  # an Controller
-            # Rechteck-Auswahl ausblenden
+                print(f"[{self.objectName()}]   EMIT deleteRect ({x1:.1f},{y1:.1f})-({x2:.1f},{y2:.1f})")
+                self.deleteRect.emit(x1, y1, x2, y2)
             self._del_start_img = None
             self._del_cur_img = None
             self.update()
@@ -380,18 +390,17 @@ class ImageDropArea(QLabel):
                 p.drawEllipse(wpt, r, r)
 
         # 3) Delete-Rect (falls aktiv) – wie gehabt ...
-        if self._del_active and self._del_start_img and self._del_cur_img:
+        if self._del_active and self._del_start_img is not None and self._del_cur_img is not None:
             a = self._image_to_widget(self._del_start_img)
             b = self._image_to_widget(self._del_cur_img)
-            rx = min(a.x(), b.x())
-            ry = min(a.y(), b.y())
-            rw = abs(a.x() - b.x())
-            rh = abs(a.y() - b.y())
-            rect_pen = QPen(QColor(0, 255, 0), 1, Qt.PenStyle.DashLine)
-            rect_pen.setCosmetic(True)
-            p.setPen(rect_pen)
-            p.setBrush(QBrush(QColor(0, 255, 0, 40)))
-            p.drawRect(rx, ry, rw, rh)
+            # a/b sind QPointF in Widget-Koordinaten; baue normiertes QRectF
+            rect = QRectF(a, b).normalized()
+
+            pen = self._rect_pen
+            pen.setCosmetic(True)  # gleichbleibende Linienstärke
+            p.setPen(pen)
+            p.setBrush(self._rect_brush)
+            p.drawRect(rect)
 
         p.end()
 

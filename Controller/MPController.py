@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional
 from Model.image_ops import apply_contrast_brightness
 from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool, QRunnable, QTimer
-from PyQt6.QtGui import QImage, QImageReader, QPixmap
+from PyQt6.QtGui import QImage, QImageReader
 from Controller.enums import MouseStatus
 import math
 
@@ -47,6 +47,15 @@ class ImageController(QObject):
     def __init__(self, view):
         super().__init__()
         self.view = view  # Referenzen auf DropAreas/Slider nimmt der Controller aus der View
+
+        # Eindeutige Namen (nur fürs Debuggen / Logs)
+        try:
+            self.view.dropHighRes.setObjectName("dropHighRes")
+            self.view.dropSD.setObjectName("dropSD")
+            self.view.dropMicro.setObjectName("dropMicro")
+        except Exception as e:
+            print("Objektnamen setzen fehlgeschlagen:", e)
+
         self.pool = QThreadPool.globalInstance()
         self.states: Dict[str, ImageState] = {
             "highres": ImageState(),
@@ -55,7 +64,6 @@ class ImageController(QObject):
         }
         self.sig = _ResultSignal()
         self.sig.finished.connect(self._on_task_finished)
-        self.status = MouseStatus.IDLE
 
         # Debounce-Timer pro Panel (Slider feuern häufig)
         self._debounce: Dict[str, QTimer] = {}
@@ -70,20 +78,42 @@ class ImageController(QObject):
         self.edit_R_screen = 30.0  # 30 px auf dem Bildschirm
         self.edit_strength = 1.0  # wie bisher
         self.edit_sigma = self.edit_R_screen * 0.5
-        self._edit_last_xy = None
         self._edit_hit_radius = 8.0  # optionaler Hit-Test
+
+        # Which panel is active?
+        self.mode: Dict[str, MouseStatus] = {
+            "highres": MouseStatus.IDLE,
+            "sd": MouseStatus.IDLE,
+            "micro": MouseStatus.IDLE,
+        }
+        self._edit_last_xy: Dict[str, tuple[float, float] | None] = {
+            "highres": None, "sd": None, "micro": None
+        }
         self._wire_view()
+
+    # Status and Panel Activation - helper methods
+    def _set_status(self, panel_id: str, status: MouseStatus, *, cursor=True):
+        print(f"[CTRL] _set_status panel={panel_id} -> {status.name}")
+        self.mode[panel_id] = status
+        drop = self._drop_of(panel_id)
+        if drop:
+            print(f"[CTRL]   drop={drop.objectName()} pixmap? {bool(getattr(drop, '_pixmap', None))}")
+            drop.set_mouse_status(status)
+            drop.set_draw_cursor(cursor)
+
+    def _status_is(self, panel_id: str, status: MouseStatus) -> bool:
+        return self.mode.get(panel_id, MouseStatus.IDLE) == status
 
     # --- Wiring ---
     def _wire_view(self):
         v = self.view
 
-        # Drops
+        # Drops for all 3 panels
         v.dropHighRes.imageDropped.connect(lambda p: self.load_image("highres", p))
         v.dropSD.imageDropped.connect(lambda p: self.load_image("sd", p))
         v.dropMicro.imageDropped.connect(lambda p: self.load_image("micro", p))
 
-        # Slider
+        # Sliders for all 3 panels
         if v.topLeftPanel.contrastSlider:
             v.topLeftPanel.contrastSlider.valueChanged.connect(lambda val: self.on_contrast("highres", val))
         if v.topLeftPanel.brightnessSlider:
@@ -99,7 +129,7 @@ class ImageController(QObject):
         if v.topRightPanel.brightnessSlider:
             v.topRightPanel.brightnessSlider.valueChanged.connect(lambda val: self.on_brightness("micro", val))
 
-        # Reset-Buttons aus den Toolbars:
+        # Reset-Buttons aus den Toolbars for all 3 panels
         btn = v.topLeftPanel.toolbarButtons.get("Reset")
         if btn: btn.clicked.connect(lambda: self.reset_adjustments("highres"))
 
@@ -109,85 +139,87 @@ class ImageController(QObject):
         btn = v.topRightPanel.toolbarButtons.get("Reset")
         if btn: btn.clicked.connect(lambda: self.reset_adjustments("micro"))
 
-        # Draw Segmentations
-        drawSegHRbtn = v.topLeftPanel.toolbarButtons.get("Draw Seg")
-        drawSegHRbtn.clicked.connect(self.HR_draw_seg_activate)
+        # ------ FOR HIGH RS OCT ------
+        if (btn := v.topLeftPanel.toolbarButtons.get("Draw Seg")):
+            btn.clicked.connect(lambda: self._draw_seg_activate("highres"))
+        if (btn := v.topLeftPanel.toolbarButtons.get("Draw Pts")):
+            btn.clicked.connect(lambda: self._draw_pts_activate("highres"))
+        if (btn := v.topLeftPanel.toolbarButtons.get("Edit Seg")):
+            btn.clicked.connect(lambda: self._edit_seg_activate("highres"))
+        if (btn := v.topLeftPanel.toolbarButtons.get("Del Str")):
+            btn.clicked.connect(lambda: self._del_str_activate("highres"))
 
-        # DropArea-Events für HighRes (live Punkte)
-        v.dropHighRes.segDrawStart.connect(self._hr_seg_start)
-        v.dropHighRes.segDrawMove.connect(self._hr_seg_move)
-        v.dropHighRes.segDrawEnd.connect(self._hr_seg_end)
-        v.dropHighRes.segDrawStart.connect(lambda x, y: print(f"[Signal] start ({x:.1f}, {y:.1f})"))
-        v.dropHighRes.segDrawMove.connect(lambda x, y: None)  # zu laut; ggf. testweise: print(...)
-        v.dropHighRes.segDrawEnd.connect(lambda x, y: print(f"[Signal] end   ({x:.1f}, {y:.1f})"))
+        v.dropHighRes.segDrawStart.connect(lambda x, y: self._seg_start("highres", x, y))
+        v.dropHighRes.segDrawMove.connect(lambda x, y: self._seg_move("highres", x, y))
+        v.dropHighRes.segDrawEnd.connect(lambda x, y: self._seg_end("highres", x, y))
+        v.dropHighRes.pointAdded.connect(lambda x, y: self._point_added("highres", x, y))
+        v.dropHighRes.deleteRect.connect(lambda x1, y1, x2, y2: self._delete_rect("highres", x1, y1, x2, y2))
+        v.dropHighRes.segEditStart.connect(lambda x, y: self._edit_start("highres", x, y))
+        v.dropHighRes.segEditMove.connect(lambda x, y: self._edit_move("highres", x, y))
+        v.dropHighRes.segEditEnd.connect(lambda x, y: self._edit_end("highres", x, y))
 
-        # Draw Points
-        drawPtsHRbtn = v.topLeftPanel.toolbarButtons.get("Draw Pts")  # <-- neu
-        if drawPtsHRbtn:
-            drawPtsHRbtn.clicked.connect(self.HR_draw_pts_activate)
-        v.dropHighRes.pointAdded.connect(self._hr_point_added)  # <-- neu
-        v.dropHighRes.pointAdded.connect(lambda x, y: print(f"[Signal] point ({x:.1f}, {y:.1f})"))  # Console-Log
+        # ------ FOR SD OCT ------
+        if (btn := v.bottomLeftPanel.toolbarButtons.get("Draw Seg")):
+            btn.clicked.connect(lambda: self._draw_seg_activate("sd"))
+        if (btn := v.bottomLeftPanel.toolbarButtons.get("Draw Pts")):
+            btn.clicked.connect(lambda: self._draw_pts_activate("sd"))
+        if (btn := v.bottomLeftPanel.toolbarButtons.get("Edit Seg")):
+            btn.clicked.connect(lambda: self._edit_seg_activate("sd"))
+        if (btn := v.bottomLeftPanel.toolbarButtons.get("Del Str")):
+            btn.clicked.connect(lambda: self._del_str_activate("sd"))
 
-        # Delete Structures
-        delStrBtn = v.topLeftPanel.toolbarButtons.get("Del Str")
-        if delStrBtn:
-            delStrBtn.clicked.connect(self.HR_del_str_activate)
-        # Rechteck-Ergebnis aus der DropArea anhören:
-        v.dropHighRes.deleteRect.connect(self._hr_delete_rect)
+        v.dropSD.segDrawStart.connect(lambda x, y: self._seg_start("sd", x, y))
+        v.dropSD.segDrawMove.connect(lambda x, y: self._seg_move("sd", x, y))
+        v.dropSD.segDrawEnd.connect(lambda x, y: self._seg_end("sd", x, y))
+        v.dropSD.pointAdded.connect(lambda x, y: self._point_added("sd", x, y))
+        v.dropSD.deleteRect.connect(lambda x1, y1, x2, y2: self._delete_rect("sd", x1, y1, x2, y2))
+        v.dropSD.segEditStart.connect(lambda x, y: self._edit_start("sd", x, y))
+        v.dropSD.segEditMove.connect(lambda x, y: self._edit_move("sd", x, y))
+        v.dropSD.segEditEnd.connect(lambda x, y: self._edit_end("sd", x, y))
 
-        # in _wire_view() nach den anderen Buttons:
-        editSegBtn = v.topLeftPanel.toolbarButtons.get("Edit Seg")
-        if editSegBtn:
-            editSegBtn.clicked.connect(self.HR_edit_seg_activate)
-        # DropArea-Signale anhören:
-        v.dropHighRes.segEditStart.connect(self._hr_edit_start)
-        v.dropHighRes.segEditMove.connect(self._hr_edit_move)
-        v.dropHighRes.segEditEnd.connect(self._hr_edit_end)
 
     # Edit Segmentation Functionality
-    def HR_edit_seg_activate(self):
-        print("Edit Seg clicked!")
-        self.status = MouseStatus.EDIT_SEG
-        drop = self.view.dropHighRes
-        if drop:
-            drop.set_mouse_status(MouseStatus.EDIT_SEG)
-            drop.set_draw_cursor(True)
+    def _edit_seg_activate(self, panel_id: str):
+        print(f"[{panel_id}] Edit Seg")
+        self._set_status(panel_id, MouseStatus.EDIT_SEG)
 
-    def _hr_edit_start(self, x, y):
-        if self.status != MouseStatus.EDIT_SEG:
-            return
-        drop = self.view.dropHighRes
-        idx, dist = self._nearest_seg_point_index(self.states["highres"].seg_points, x, y)
-        if idx is None:
-            return
-        hit_r_img = self._edit_hit_radius / max(1e-6, drop.current_scale())  # 8px auf dem Screen
-        if dist > hit_r_img:
-            return
-        self._edit_last_xy = (x, y)
+    def _edit_start(self, panel_id: str, x: float, y: float):
+        if not self._status_is(panel_id, MouseStatus.EDIT_SEG): return
+        idx, dist = self._nearest_seg_point_index(self.states[panel_id].seg_points, x, y)
+        if idx is None: return
+        drop = self._drop_of(panel_id)
+        hit_r_img = self._edit_hit_radius / max(1e-6, drop.current_scale())
+        if dist > hit_r_img: return
+        self._edit_last_xy[panel_id] = (x, y)
 
-    def _hr_edit_move(self, x, y):
-        if self.status != MouseStatus.EDIT_SEG or self._edit_last_xy is None:
-            return
-        st = self.states["highres"]
-        pts = st.seg_points
-        if not pts:
+    def _edit_move(self, panel_id: str, x: float, y: float):
+        if not self._status_is(panel_id, MouseStatus.EDIT_SEG):
             return
 
-        lx, ly = self._edit_last_xy
+        last = self._edit_last_xy.get(panel_id)
+        if last is None:
+            return
+
+        lx, ly = last
         dx, dy = x - lx, y - ly
         if dx == 0 and dy == 0:
             return
 
-        drop = self.view.dropHighRes
+        st = self.states[panel_id]
+        pts = st.seg_points
+        if not pts:
+            return
+
+        drop = self._drop_of(panel_id)
         s = drop.current_scale()
         R_img = self.edit_R_screen / s
         sigma = max(1.0, R_img * 0.5)
-
         R2 = R_img * R_img
         two_sigma2 = 2.0 * sigma * sigma
+
         import math
         for i, (px, py) in enumerate(pts):
-            d2 = (px - x) * (px - x) + (py - y) * (py - y)
+            d2 = (px - x) ** 2 + (py - y) ** 2
             if d2 > R2:
                 continue
             w = math.exp(-d2 / two_sigma2) * self.edit_strength
@@ -195,10 +227,10 @@ class ImageController(QObject):
 
         self._laplacian_smooth(pts, iters=1, lam=0.2 * (1.0 / max(1.0, s)) ** 0.3)
         drop.set_segmentation(pts)
-        self._edit_last_xy = (x, y)
+        self._edit_last_xy[panel_id] = (x, y)
 
-    def _hr_edit_end(self, x, y):
-        self._edit_last_xy = None
+    def _edit_end(self, panel_id: str, x: float, y: float):
+        self._edit_last_xy[panel_id] = None
 
     def _laplacian_smooth(self, pts, iters=1, lam=0.2):
         n = len(pts)
@@ -213,137 +245,98 @@ class ImageController(QObject):
             pts[:] = new
 
     # Delete functionality
-    def HR_del_str_activate(self):
-        print("Del Str clicked!")
-        self.status = MouseStatus.DEL_STR
-        drop = self.view.dropHighRes
-        if drop:
-            drop.set_mouse_status(MouseStatus.DEL_STR)
-            drop.set_draw_cursor(True)  # Crosshair ist praktisch
-        # nichts löschen, vorhandene Strukturen bleiben sichtbar
+    def _del_str_activate(self, panel_id: str):
+        print(f"[BTN] Del Str clicked for {panel_id}")
+        self._set_status(panel_id, MouseStatus.DEL_STR)
 
-    def _hr_delete_rect(self, x1: float, y1: float, x2: float, y2: float):
-        # Normalisieren
+    def _delete_rect(self, panel_id: str, x1: float, y1: float, x2: float, y2: float):
+        print(f"[CTRL] _delete_rect CALLED panel={panel_id} coords=({x1:.1f},{y1:.1f})-({x2:.1f},{y2:.1f})")
+
         xmin, xmax = (x1, x2) if x1 <= x2 else (x2, x1)
         ymin, ymax = (y1, y2) if y1 <= y2 else (y2, y1)
 
-        st = self.states["highres"]
+        st = self.states[panel_id]
 
-        # Punkte: alle innerhalb löschen
         before_pts = len(st.pts_points)
         st.pts_points = [
             (x, y) for (x, y) in st.pts_points
             if not (xmin <= x <= xmax and ymin <= y <= ymax)
         ]
 
-        # Segmentation: nur löschen, wenn *alle* Punkte im Rechteck liegen
         seg_deleted = False
-        if st.seg_points:
-            if all(xmin <= x <= xmax and ymin <= y <= ymax for (x, y) in st.seg_points):
-                st.seg_points.clear()
-                seg_deleted = True
+        if st.seg_points and all(xmin <= x <= xmax and ymin <= y <= ymax for (x, y) in st.seg_points):
+            st.seg_points.clear()
+            seg_deleted = True
 
-        # View updaten
-        drop = self.view.dropHighRes
-        drop.set_points(st.pts_points)
-        drop.set_segmentation(st.seg_points)
+        drop = self._drop_of(panel_id)
+        if drop:
+            drop.set_points(st.pts_points)
+            drop.set_segmentation(st.seg_points)
 
-        print(f"[HighRes] DeleteRect ({xmin:.1f},{ymin:.1f})-({xmax:.1f},{ymax:.1f}) -> "
+        print(f"[{panel_id}] DeleteRect ({xmin:.1f},{ymin:.1f})-({xmax:.1f},{ymax:.1f}) -> "
               f"removed {before_pts - len(st.pts_points)} pts{' + seg' if seg_deleted else ''}")
 
     # Draw Points Functions
-    def HR_draw_pts_activate(self):  # <-- neu
-        print("Draw Pts clicked!")
-        self.status = MouseStatus.DRAW_PTS
-        drop = self.view.dropHighRes
-        if drop:
-            drop.set_mouse_status(MouseStatus.DRAW_PTS)
-            drop.set_draw_cursor(True)
-        # NICHTS löschen – vorhandene Seg/Points bleiben sichtbar
+    def _draw_pts_activate(self, panel_id: str):
+        print(f"[{panel_id}] Draw Pts")
+        self._set_status(panel_id, MouseStatus.DRAW_PTS)
 
     # --- Point-Handler (nur HighRes; analog für andere Panels möglich) ---
-    def _hr_point_added(self, x: float, y: float):  # <-- neu
-        st = self.states["highres"]
+    def _point_added(self, panel_id: str, x: float, y: float):
+        st = self.states[panel_id]
         st.pts_points.append((x, y))
-        self.view.dropHighRes.set_points(st.pts_points)
-        print(f"[HighRes] POINT  ({x:.1f}, {y:.1f})")
+        self._drop_of(panel_id).set_points(st.pts_points)
 
     # Draw Segmentation Functions
-    def HR_draw_seg_activate(self):
-        print("Draw Seg clicked!")
-        self.status = MouseStatus.DRAW_SEG
-        drop = self.view.dropHighRes
-        if drop:
-            drop.set_mouse_status(MouseStatus.DRAW_SEG)
-            drop.set_draw_cursor(True)
-            print("[Controller] status:", self.status)  # DEBUG
-        self.states["highres"].seg_points.clear()
+    def _draw_seg_activate(self, panel_id: str):
+        print(f"[{panel_id}] Draw Seg")
+        self.states[panel_id].seg_points.clear()
+        self._set_status(panel_id, MouseStatus.DRAW_SEG)
 
-    def _hr_seg_start(self, x: float, y: float):
-        if self.status != MouseStatus.DRAW_SEG:
-            return
-        print(f"[HighRes] START  ({x:.1f}, {y:.1f})")
-        st = self.states["highres"]
+    def _seg_start(self, panel_id: str, x: float, y: float):
+        if not self._status_is(panel_id, MouseStatus.DRAW_SEG): return
+        st = self.states[panel_id]
         st.seg_points = [(x, y)]
-        self.view.dropHighRes.set_segmentation(st.seg_points)
+        self._drop_of(panel_id).set_segmentation(st.seg_points)
 
-    def _hr_seg_move(self, x: float, y: float):
-        if self.status != MouseStatus.DRAW_SEG:
-            return
-        # Achtung: sehr „chattig“. Optional drosseln (siehe unten).
-        print(f"[HighRes] MOVE   ({x:.1f}, {y:.1f})")
-        st = self.states["highres"]
+    def _seg_move(self, panel_id: str, x: float, y: float):
+        if not self._status_is(panel_id, MouseStatus.DRAW_SEG): return
+        st = self.states[panel_id]
         st.seg_points.append((x, y))
-        self.view.dropHighRes.set_segmentation(st.seg_points)
+        self._drop_of(panel_id).set_segmentation(st.seg_points)
 
-    def _hr_seg_end(self, x: float, y: float):
-        if self.status != MouseStatus.DRAW_SEG:
-            return
-        print(f"[HighRes] END    ({x:.1f}, {y:.1f})")  # <-- Log
-        st = self.states["highres"]
+    def _seg_end(self, panel_id: str, x: float, y: float):
+        if not self._status_is(panel_id, MouseStatus.DRAW_SEG): return
+        st = self.states[panel_id]
         st.seg_points.append((x, y))
-        self.view.dropHighRes.set_segmentation(st.seg_points)
+        self._drop_of(panel_id).set_segmentation(st.seg_points)
 
     # Helper Functions
-    def reset_adjustments(self, panel_id: str):
-        """Slider zurück auf neutral und ORIGINALBILD anzeigen."""
-        st = self.states[panel_id]
-        # ausstehende Debounces stoppen, alte Tasks werden per version ignoriert
-        self._debounce[panel_id].stop()
+    # --- Reset: Status sauber zurücksetzen, panel-spezifisch ---
 
-        # State neutral
+    def reset_adjustments(self, panel_id: str):
+        st = self.states[panel_id]
+        self._debounce[panel_id].stop()
         st.contrast = 150
         st.brightness = 0
-        st.version += 1  # markiert alle alten Ergebnisse als veraltet
+        st.version += 1
 
-        # View-Slider zurücksetzen (ohne Events zu feuern)
         panel = self._panel_of(panel_id)
-        if panel:
-            if panel.contrastSlider:
-                panel.contrastSlider.blockSignals(True)
-                panel.contrastSlider.setValue(150)
-                panel.contrastSlider.blockSignals(False)
-            if panel.brightnessSlider:
-                panel.brightnessSlider.blockSignals(True)
-                panel.brightnessSlider.setValue(0)
-                panel.brightnessSlider.blockSignals(False)
+        if panel and panel.contrastSlider:
+            panel.contrastSlider.blockSignals(True)
+            panel.contrastSlider.setValue(150)
+            panel.contrastSlider.blockSignals(False)
+        if panel and panel.brightnessSlider:
+            panel.brightnessSlider.blockSignals(True)
+            panel.brightnessSlider.setValue(0)
+            panel.brightnessSlider.blockSignals(False)
 
-        # Original anzeigen (ohne erneut zu rechnen)
         if st.original is not None:
             drop = self._drop_of(panel_id)
-            if drop:
-                if hasattr(drop, "show_qimage"):
-                    drop.show_qimage(st.original)  # bequemer Helper
-                else:
-                    drop.setPixmap(QPixmap.fromImage(st.original))
-                    drop.setText("")
+            if drop and hasattr(drop, "show_qimage"):
+                drop.show_qimage(st.original)
 
-        if panel_id == "highres":
-            self.status = MouseStatus.IDLE
-            drop = self._drop_of("highres")
-            if drop:
-                drop.set_mouse_status(MouseStatus.IDLE)
-                drop.set_draw_cursor(False)
+        self._set_status(panel_id, MouseStatus.IDLE, cursor=False)
 
     # --- Public API (View ruft Controller) ---
     def load_image(self, panel_id: str, path: str):
