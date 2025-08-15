@@ -1,8 +1,9 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QPushButton
 from PyQt6.QtCore import Qt
-from .panel import Panel
 from .dropArea import ImageDropArea
 from Controller.MPController import ImageController
+from .panel import Panel
+
 
 class MicroPerimetryGUI(QWidget):
     def __init__(self):
@@ -97,6 +98,7 @@ class MicroPerimetryGUI(QWidget):
         # Microperimetry Tools
         self.topRightPanel.add_toolbar_buttons({
             "Draw Pts": self._btn("Draw Pts"),
+            "Del Pts": self._btn("Del Pts"),
             "Reset": self._btn("Reset")
         })
         self.topRightPanel.add_adjustment_sliders(
@@ -123,6 +125,7 @@ class MicroPerimetryGUI(QWidget):
         # Left: Set Drop Areas directly as content-Area
         self.topLeftPanel.set_content(self.dropHighRes)
         self.bottomLeftPanel.set_content(self.dropSD)
+        self.topRightPanel.set_content(self.dropMicro)
 
         # Rechts: Content-Container mit DropArea (oben) + Bottom-Bar (unten, 100px)
         self.rightContent = QWidget()

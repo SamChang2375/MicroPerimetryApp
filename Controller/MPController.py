@@ -177,6 +177,15 @@ class ImageController(QObject):
         v.dropSD.segEditMove.connect(lambda x, y: self._edit_move("sd", x, y))
         v.dropSD.segEditEnd.connect(lambda x, y: self._edit_end("sd", x, y))
 
+        # ------ FOR MICRO (MP) ------
+        if (btn := v.topRightPanel.toolbarButtons.get("Draw Pts")):
+            btn.clicked.connect(lambda: self._draw_pts_activate("micro"))
+        if (btn := v.topRightPanel.toolbarButtons.get("Del Pts")):
+            btn.clicked.connect(lambda: self._del_str_activate("micro"))
+
+        v.dropMicro.pointAdded.connect(lambda x, y: self._point_added("micro", x, y))
+        v.dropMicro.deleteRect.connect(lambda x1, y1, x2, y2: self._delete_rect("micro", x1, y1, x2, y2))
+
 
     # Edit Segmentation Functionality
     def _edit_seg_activate(self, panel_id: str):
