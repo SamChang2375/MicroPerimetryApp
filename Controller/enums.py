@@ -5,3 +5,4 @@ class MouseStatus(Enum):
     DRAW_SEG = auto()
     DRAW_PTS = auto()
     DEL_STR = auto()
+    EDIT_SEG = auto()

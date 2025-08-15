@@ -25,6 +25,10 @@ class ImageDropArea(QLabel):
 
     deleteRect = pyqtSignal(float, float, float, float)
 
+    segEditStart = pyqtSignal(float, float)
+    segEditMove = pyqtSignal(float, float)
+    segEditEnd = pyqtSignal(float, float)
+
     def __init__(self, placeholder: str = "Drag & Drop the image here"):
         # Initialize the default (start-up)
         super().__init__(placeholder)
@@ -52,6 +56,9 @@ class ImageDropArea(QLabel):
         # Optics of the delet-Rect
         self._rect_pen = QPen(QColor(0, 255, 0), 1, Qt.PenStyle.DashLine)
         self._rect_brush = QBrush(QColor(0, 255, 0, 40))
+
+        self._edit_active: bool = False
+        self._edit_last_img: QPointF | None = None
 
     # ---- Drag & Drop ----
     def dragEnterEvent(self, event):
@@ -205,6 +212,16 @@ class ImageDropArea(QLabel):
                 e.accept();
                 return
 
+        # --- EDIT_SEG: linken Button drücken um auf Linie "einzuhaken"
+        if self._status == MouseStatus.EDIT_SEG and self._pixmap and e.button() == Qt.MouseButton.LeftButton:
+            img_pt = self._widget_to_image(e.position())
+            if img_pt is not None:
+                self._edit_active = True
+                self._edit_last_img = img_pt
+                self.segEditStart.emit(img_pt.x(), img_pt.y())
+                e.accept()
+                return
+
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
@@ -224,6 +241,15 @@ class ImageDropArea(QLabel):
             if img_pt is not None:
                 self._del_cur_img = img_pt
                 self.update()
+                e.accept()
+                return
+
+        if self._status == MouseStatus.EDIT_SEG and self._pixmap and self._edit_active and (
+                e.buttons() & Qt.MouseButton.LeftButton):
+            img_pt = self._widget_to_image(e.position())
+            if img_pt is not None:
+                self._edit_last_img = img_pt
+                self.segEditMove.emit(img_pt.x(), img_pt.y())
                 e.accept()
                 return
 
@@ -249,6 +275,14 @@ class ImageDropArea(QLabel):
             self._del_start_img = None
             self._del_cur_img = None
             self.update()
+            e.accept()
+            return
+
+        if self._status == MouseStatus.EDIT_SEG and self._edit_active and e.button() == Qt.MouseButton.LeftButton:
+            self._edit_active = False
+            if self._edit_last_img is not None:
+                self.segEditEnd.emit(self._edit_last_img.x(), self._edit_last_img.y())
+            self._edit_last_img = None
             e.accept()
             return
 

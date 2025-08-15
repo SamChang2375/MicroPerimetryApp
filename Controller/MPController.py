@@ -6,6 +6,7 @@ from Model.image_ops import apply_contrast_brightness
 from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool, QRunnable, QTimer
 from PyQt6.QtGui import QImage, QImageReader, QPixmap
 from Controller.enums import MouseStatus
+import math
 
 # --- Model ---
 @dataclass
@@ -31,6 +32,7 @@ class _ProcessTask(QRunnable):
         self.c = c
         self.b = b
         self.sig = sig
+        self._hr_edit = None
 
     def run(self):
         out = apply_contrast_brightness(self.qimg, self.c, self.b)
@@ -64,6 +66,13 @@ class ImageController(QObject):
             t.timeout.connect(lambda pid=pid: self._launch_processing(pid))
             self._debounce[pid] = t
 
+        self._edit_anchor_idx: int | None = None
+        self._edit_window_idx: list[int] = []
+        self._edit_weights: list[float] = []
+        self._edit_last_xy: tuple[float, float] | None = None
+        # einstellbare Parameter
+        self._edit_hit_radius = 8.0  # px um überhaupt „zu greifen“
+        self._edit_window_radius_px = 15.0  # ±15 px entlang der Kurve => 30 px total
         self._wire_view()
 
     # --- Wiring ---
@@ -126,6 +135,72 @@ class ImageController(QObject):
             delStrBtn.clicked.connect(self.HR_del_str_activate)
         # Rechteck-Ergebnis aus der DropArea anhören:
         v.dropHighRes.deleteRect.connect(self._hr_delete_rect)
+
+        # in _wire_view() nach den anderen Buttons:
+        editSegBtn = v.topLeftPanel.toolbarButtons.get("Edit Seg")
+        if editSegBtn:
+            editSegBtn.clicked.connect(self.HR_edit_seg_activate)
+        # DropArea-Signale anhören:
+        v.dropHighRes.segEditStart.connect(self._hr_edit_start)
+        v.dropHighRes.segEditMove.connect(self._hr_edit_move)
+        v.dropHighRes.segEditEnd.connect(self._hr_edit_end)
+
+    # Edit Segmentation Functionality
+    def HR_edit_seg_activate(self):
+        print("Edit Seg clicked!")
+        self.status = MouseStatus.EDIT_SEG
+        drop = self.view.dropHighRes
+        if drop:
+            drop.set_mouse_status(MouseStatus.EDIT_SEG)
+            drop.set_draw_cursor(True)
+
+    import math
+
+    def _hr_edit_start(self, x: float, y: float):
+        if self.status != MouseStatus.EDIT_SEG:
+            return
+        st = self.states["highres"]
+        pts = st.seg_points
+        if not pts:
+            return
+
+        idx, d = self._nearest_seg_point_index(pts, x, y)
+        if idx is None or d > self._edit_hit_radius:
+            # nichts unter dem Cursor – Session ignorieren
+            return
+
+        self._edit_anchor_idx = idx
+        self._edit_window_idx, self._edit_weights = self._build_edit_window(pts, idx, self._edit_window_radius_px)
+        self._edit_last_xy = (x, y)
+        # optional: print(f"[HighRes] EDIT start idx={idx}, window={len(self._edit_window_idx)}")
+
+    def _hr_edit_move(self, x: float, y: float):
+        if self.status != MouseStatus.EDIT_SEG or self._edit_last_xy is None or self._edit_anchor_idx is None:
+            return
+        st = self.states["highres"]
+        pts = st.seg_points
+        if not pts:
+            return
+
+        lx, ly = self._edit_last_xy
+        dx, dy = (x - lx), (y - ly)
+        if dx == 0 and dy == 0:
+            return
+
+        for j, w in zip(self._edit_window_idx, self._edit_weights):
+            px, py = pts[j]
+            pts[j] = (px + w * dx, py + w * dy)  # 2D-Verschiebung
+
+        self._edit_last_xy = (x, y)
+        self.view.dropHighRes.set_segmentation(pts)
+
+    def _hr_edit_end(self, x: float, y: float):
+        if self.status != MouseStatus.EDIT_SEG:
+            return
+        self._edit_anchor_idx = None
+        self._edit_window_idx = []
+        self._edit_weights = []
+        self._edit_last_xy = None
 
     # Delete functionality
     def HR_del_str_activate(self):
@@ -327,3 +402,64 @@ class ImageController(QObject):
 
     def _on_compute_grids_clicked(self):
         print("[Controller] Compute Grids – später implementieren")
+
+    # Helper Functions
+    def _euclid(self, a: tuple[float, float], b: tuple[float, float]) -> float:
+        ax, ay = a;
+        bx, by = b
+        dx = ax - bx;
+        dy = ay - by
+        return (dx * dx + dy * dy) ** 0.5
+
+    def _nearest_seg_point_index(self, pts: list[tuple[float, float]], x: float, y: float):
+        """Nächster Stützpunkt zur Cursorposition (Bildkoords)."""
+        best_i = None
+        best_d2 = float("inf")
+        for i, (px, py) in enumerate(pts):
+            d2 = (px - x) * (px - x) + (py - y) * (py - y)
+            if d2 < best_d2:
+                best_d2 = d2
+                best_i = i
+        return best_i, best_d2 ** 0.5
+
+    def _build_edit_window(self, pts: list[tuple[float, float]], idx_center: int, radius_px: float):
+        """
+        Liefert (indices, weights) für ein Fenster von ±radius_px entlang der POLYLINE
+        um idx_center; Gewicht = Cosinus-Taper (1 in der Mitte -> 0 am Rand).
+        """
+        n = len(pts)
+        indices = {idx_center}
+        # Distanzen von center entlang der Kurve
+        dist_from_center = {idx_center: 0.0}
+
+        # nach links laufen
+        d = 0.0
+        j = idx_center
+        while j > 0:
+            d += self._euclid(pts[j], pts[j - 1])
+            if d > radius_px: break
+            j -= 1
+            indices.add(j)
+            dist_from_center[j] = d
+
+        # nach rechts laufen
+        d = 0.0
+        j = idx_center
+        while j < n - 1:
+            d += self._euclid(pts[j], pts[j + 1])
+            if d > radius_px: break
+            j += 1
+            indices.add(j)
+            dist_from_center[j] = d
+
+        # sortiert + Gewichte (Cosine window)
+        idx_list = sorted(indices)
+        w_list = []
+        for j in idx_list:
+            s = min(dist_from_center.get(j, 0.0), radius_px)
+            # cos-Taper: w(0)=1, w(radius)=0, glatt
+            w = 0.5 * (1.0 + math.cos(math.pi * (s / radius_px)))
+            w_list.append(w)
+
+        return idx_list, w_list
+
