@@ -22,20 +22,25 @@ class MicroPerimetryGUI(QWidget):
         # Build Splitter structure
         mainSplitter = QSplitter(Qt.Orientation.Horizontal)   # links/rechts
         leftSplitter = QSplitter(Qt.Orientation.Vertical)      # oben/unten
+        rightSplitter = QSplitter(Qt.Orientation.Vertical)
 
         # create three Panels --> Implemented in the Panel-Class
         self.topLeftPanel = Panel("High Res OCT Image")
         self.bottomLeftPanel = Panel("SD OCT Image")
-        self.rightPanel = Panel("MicroPerimetry Image")
+        self.topRightPanel = Panel("MicroPerimetry Imabge")
+        self.bottomRightPanel = Panel("Compute Area")
 
         # Put the panels together to the Layout
         leftSplitter.addWidget(self.topLeftPanel)
         leftSplitter.addWidget(self.bottomLeftPanel)
+        rightSplitter.addWidget(self.topRightPanel)
+        rightSplitter.addWidget(self.bottomRightPanel)
         mainSplitter.addWidget(leftSplitter)
-        mainSplitter.addWidget(self.rightPanel)
+        mainSplitter.addWidget(rightSplitter)
 
         # Starting panel window size + resizing panels
         leftSplitter.setSizes([200, 200])
+        rightSplitter.setSizes([350, 50])
         mainSplitter.setSizes([500, 700])
         mainSplitter.setStretchFactor(0, 1)
         mainSplitter.setStretchFactor(1, 2)
@@ -51,6 +56,7 @@ class MicroPerimetryGUI(QWidget):
         self._setup_toolbars()
         self._setup_drop_areas()
         self._connect_slider_signals()
+        self._connect_draw_seg()
 
     # ------- Helper function to build the toolBar Buttons -------
     def _setup_toolbars(self):
@@ -62,7 +68,6 @@ class MicroPerimetryGUI(QWidget):
             "Del Str": self._btn("Del Str"),
             "Reset": self._btn("Reset")
         })
-        # ← Slider hinzufügen (mit Labels)
         self.topLeftPanel.add_adjustment_sliders(
             with_labels=True,  # "Contrast" / "Brightness" anzeigen
             contrast_range=(0, 300),  # 100 = neutral
@@ -72,7 +77,7 @@ class MicroPerimetryGUI(QWidget):
             slider_min_width=140  # ggf. anpassen, wenn es eng wird
         )
 
-        # Unten links: SD-OCT – Filter/Overlay
+        # SD OCT Tools
         self.bottomLeftPanel.add_toolbar_buttons({
             "Draw Seg": self._btn("Draw Seg"),
             "Draw Pts": self._btn("Draw Pts"),
@@ -89,12 +94,12 @@ class MicroPerimetryGUI(QWidget):
             slider_min_width=140  # ggf. anpassen, wenn es eng wird
         )
 
-        # Rechts: MicroPerimetry – Punkte/Alignment/Analyse
-        self.rightPanel.add_toolbar_buttons({
+        # Microperimetry Tools
+        self.topRightPanel.add_toolbar_buttons({
             "Draw Pts": self._btn("Draw Pts"),
             "Reset": self._btn("Reset")
         })
-        self.rightPanel.add_adjustment_sliders(
+        self.topRightPanel.add_adjustment_sliders(
             with_labels=True,  # "Contrast" / "Brightness" anzeigen
             contrast_range=(0, 300),  # 100 = neutral
             contrast_default=150,
@@ -103,13 +108,19 @@ class MicroPerimetryGUI(QWidget):
             slider_min_width=140  # ggf. anpassen, wenn es eng wird
         )
 
-    def _setup_drop_areas(self):
-        # Je Panel eine eigene Instanz -> später separat ansteuerbar
-        self.dropHighRes = ImageDropArea("Bild hierher ziehen …")
-        self.dropSD = ImageDropArea("Bild hierher ziehen …")
-        self.dropMicro = ImageDropArea("Bild hierher ziehen …")
+        # Compute Buttoms
+        self.bottomRightPanel.add_toolbar_buttons({
+            "Draw Pts": self._btn("Compute Grids"),
+            "Reset": self._btn("Reset")
+        })
 
-        # Links: Dropflächen direkt als Content
+    def _setup_drop_areas(self):
+        # per panel an own ImageDropArea-Instance
+        self.dropHighRes = ImageDropArea("Drag&Drop Image here")
+        self.dropSD = ImageDropArea("Drag&Drop Image here")
+        self.dropMicro = ImageDropArea("Drag&Drop Image here")
+
+        # Left: Set Drop Areas directly as content-Area
         self.topLeftPanel.set_content(self.dropHighRes)
         self.bottomLeftPanel.set_content(self.dropSD)
 
@@ -119,41 +130,14 @@ class MicroPerimetryGUI(QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
 
-        # Oberer Bereich: Drop-Area (expandiert)
-        v.addWidget(self.dropMicro)
-
-        # Unterer Bereich: 100px hoch, 2 Buttons
-        self.rightBottomBar = QWidget()
-        self.rightBottomBar.setFixedHeight(100)
-        hb = QHBoxLayout(self.rightBottomBar)
-        hb.setContentsMargins(12, 12, 12, 12)
-        hb.setSpacing(12)
-
-        # Buttons anlegen + referenzieren (später leicht ansteuerbar)
-        self.btnRightReset = QPushButton("Reset")
-        self.btnComputeGrids = QPushButton("Compute Grids")
-        self.btnRightReset.setMinimumHeight(40)
-        self.btnComputeGrids.setMinimumHeight(40)
-
-        # Buttons platzieren (links) + Stretch rechts für Luft
-        hb.addWidget(self.btnRightReset)
-        hb.addWidget(self.btnComputeGrids)
-        hb.addStretch(1)
-
-        # Bottom-Bar ans Ende setzen
-        v.addWidget(self.rightBottomBar)
-
-        # Den kompletten Container als Content des rechten Panels setzen
-        self.rightPanel.set_content(self.rightContent)
-
         # (Optional) zum Testen:
         self.dropHighRes.imageDropped.connect(lambda p: print("[HighRes] Dropped:", p))
         self.dropSD.imageDropped.connect(lambda p: print("[SD] Dropped:", p))
         self.dropMicro.imageDropped.connect(lambda p: print("[Micro] Dropped:", p))
 
     def _connect_slider_signals(self):
-        """Optional: Slider-Events verbinden (nur Beispiel-Prints)."""
-        # Oben links
+        # Connect Slider signals
+        # High Res Panel
         if self.topLeftPanel.contrastSlider:
             self.topLeftPanel.contrastSlider.valueChanged.connect(
                 lambda v: print(f"[HighRes] Contrast -> {v}")
@@ -163,7 +147,7 @@ class MicroPerimetryGUI(QWidget):
                 lambda v: print(f"[HighRes] Brightness -> {v}")
             )
 
-        # Unten links
+        # SD OCT Panel
         if self.bottomLeftPanel.contrastSlider:
             self.bottomLeftPanel.contrastSlider.valueChanged.connect(
                 lambda v: print(f"[SD] Contrast -> {v}")
@@ -173,13 +157,13 @@ class MicroPerimetryGUI(QWidget):
                 lambda v: print(f"[SD] Brightness -> {v}")
             )
 
-        # Rechts
-        if self.rightPanel.contrastSlider:
-            self.rightPanel.contrastSlider.valueChanged.connect(
+        # Microperimetry Panel
+        if self.topRightPanel.contrastSlider:
+            self.topRightPanel.contrastSlider.valueChanged.connect(
                 lambda v: print(f"[Micro] Contrast -> {v}")
             )
-        if self.rightPanel.brightnessSlider:
-            self.rightPanel.brightnessSlider.valueChanged.connect(
+        if self.topRightPanel.brightnessSlider:
+            self.topRightPanel.brightnessSlider.valueChanged.connect(
                 lambda v: print(f"[Micro] Brightness -> {v}")
             )
 
@@ -188,3 +172,12 @@ class MicroPerimetryGUI(QWidget):
         btn = QPushButton(text)
         btn.setMinimumHeight(36)
         return btn
+
+    def _connect_draw_seg(self):
+        for panel in (self.topLeftPanel, self.bottomLeftPanel, self.topRightPanel):
+            btn = panel.toolbarButtons.get("Draw Seg")
+            if btn:
+                btn.clicked.connect(self.clicked)
+
+    def clicked(self):
+        print("Button wurde geklickt!")

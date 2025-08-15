@@ -2,91 +2,44 @@ from PyQt6.QtWidgets import QLabel
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRect
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage
 from pathlib import Path
+from Controller.enums import MouseStatus
 
+DRAW_BUTTONS = {Qt.MouseButton.LeftButton}
 ALLOWED_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
 
 class ImageDropArea(QLabel):
     """
-    Drag&Drop-Widget für Bilder + (optional) Zeichnen einer Segmentationslinie
-    per rechter Maustaste (RMB), wenn Modus 'draw_seg' aktiv ist.
+    Drag&Drop-Widget for the images, based on QLabel
+    Aspect-Fit - it uses the whole area of the content panel
+    Each ImageDropArea can be accessed separately.
     """
-    imageDropped = pyqtSignal(str)
+    imageDropped = pyqtSignal(str)  # stores the path of the image file
 
-    # Bildkoordinaten (float, Pixel)
     segDrawStart = pyqtSignal(float, float)
-    segDrawMove  = pyqtSignal(float, float)
-    segDrawEnd   = pyqtSignal(float, float)
+    segDrawMove = pyqtSignal(float, float)
+    segDrawEnd = pyqtSignal(float, float)
 
     def __init__(self, placeholder: str = "Drag & Drop the image here"):
+        # Initialize the default (start-up)
         super().__init__(placeholder)
         self.setObjectName("DropArea")
-        self.setAcceptDrops(True)
+        self.setAcceptDrops(True) # activate Drag- and Drop
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setWordWrap(True)
-        # optional: für Hover-Feedback während RMB nicht nötig
-        # self.setMouseTracking(True)
 
         self._pixmap: QPixmap | None = None
         self._path: str | None = None
 
-        # Zeichnen
-        self._mode: str = "idle"   # 'idle' | 'draw_seg'
+        self._status: MouseStatus = MouseStatus.IDLE
         self._rmb_down: bool = False
-        self._seg_points: list[QPointF] = []
+        self._seg_points: list[QPointF] = []  # aktuelle Polyline in Bildkoordinaten
         self._overlay_color = QColor(255, 0, 0)
-        self._overlay_width = 2
+        self._overlay_width = 10
 
-    # -------------------- Public API --------------------
-    def load_image(self, path: str) -> bool:
-        pm = QPixmap(path)
-        if pm.isNull():
-            return False
-        self._pixmap = pm
-        self._path = path
-        self._seg_points.clear()
-        self.setText("")      # Platzhalter aus
-        self.update()         # neu malen (Bild + ggf. Overlay)
-        self.imageDropped.emit(path)
-        return True
-
-    def clear_image(self):
-        self._pixmap = None
-        self._path = None
-        self._seg_points.clear()
-        self.setText("Bild hierher ziehen …")
-        self.update()
-
-    def show_qimage(self, qimg: QImage):
-        self._pixmap = QPixmap.fromImage(qimg)
-        self.setText("")
-        self.update()
-
-    @property
-    def image_path(self) -> str | None:
-        return self._path
-
-    def set_interaction_mode(self, mode: str):
-        self._mode = mode  # 'idle' oder 'draw_seg'
-
-    def set_segmentation(self, pts_img):
-        """Overlay vom Controller setzen (Bildkoordinaten)."""
-        out = []
-        for p in pts_img:
-            if isinstance(p, QPointF):
-                out.append(QPointF(p.x(), p.y()))
-            else:
-                x, y = p
-                out.append(QPointF(float(x), float(y)))
-        self._seg_points = out
-        self.update()
-
-    def clear_segmentation(self):
-        self._seg_points.clear()
-        self.update()
-
-    # -------------------- Drag & Drop --------------------
+    # ---- Drag & Drop ----
     def dragEnterEvent(self, event):
+        # Dragging into the dropArea Widget
         if self._has_image_url(event):
             event.acceptProposedAction()
             self.setProperty("dragActive", True)
@@ -120,70 +73,56 @@ class ImageDropArea(QLabel):
         self._pixmap = pm
         self._path = path
         self._seg_points.clear()
+        self._update_pixmap()
         self.setProperty("dragActive", False)
         self.style().unpolish(self); self.style().polish(self)
-        self.setText("")
-        self.update()
         self.imageDropped.emit(path)
         event.acceptProposedAction()
+        self.setText("")
 
-    # -------------------- Maus / Zeichnen --------------------
-    def mousePressEvent(self, e):
-        if self._mode == "draw_seg" and e.button() == Qt.MouseButton.RightButton and self._pixmap:
-            img_pt = self._widget_to_image(e.position())
-            if img_pt is not None:
-                self._rmb_down = True
-                self.segDrawStart.emit(img_pt.x(), img_pt.y())
-                e.accept(); return
-        super().mousePressEvent(e)
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_pixmap()
 
-    def mouseMoveEvent(self, e):
-        if self._mode == "draw_seg" and self._rmb_down and self._pixmap:
-            img_pt = self._widget_to_image(e.position())
-            if img_pt is not None:
-                self.segDrawMove.emit(img_pt.x(), img_pt.y())
-                e.accept(); return
-        super().mouseMoveEvent(e)
+    # ---- Public API ----
+    def set_mouse_status(self, status: MouseStatus):
+        self._status = status
 
-    def mouseReleaseEvent(self, e):
-        if self._mode == "draw_seg" and self._rmb_down and e.button() == Qt.MouseButton.RightButton:
-            self._rmb_down = False
-            img_pt = self._widget_to_image(e.position())
-            if img_pt is not None:
-                self.segDrawEnd.emit(img_pt.x(), img_pt.y())
-            e.accept(); return
-        super().mouseReleaseEvent(e)
+    def load_image(self, path: str) -> bool:
+        pm = QPixmap(path)
+        if pm.isNull():
+            return False
+        self._pixmap = pm
+        self._path = path
+        self._seg_points.clear()
+        self.setText("")
+        self._update_pixmap()  # QLabel bekommt die skalierte Pixmap
+        self.imageDropped.emit(path)
+        return True
 
-    # -------------------- Malen --------------------
-    def paintEvent(self, e):
-        # QLabel malt NICHT automatisch dein Original wenn du es selbst verwaltest.
-        # Wir zeichnen daher Image (aspect-fit) + Overlay explizit.
-        super().paintEvent(e)
+    def clear_image(self):
+        self._pixmap = None
+        self._path = None
+        self._seg_points.clear()
+        self.setText("Bild hierher ziehen …")
+        self.update()
 
-        if not self._pixmap:
-            return
+    @property
+    def image_path(self) -> str | None:
+        return self._path
 
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    def set_draw_cursor(self, on: bool):
+        self.setCursor(Qt.CursorShape.CrossCursor if on else Qt.CursorShape.ArrowCursor)
 
-        # Bild zeichnen (aspect-fit, zentriert)
-        rect = self._target_rect()
-        painter.drawPixmap(rect, self._pixmap)
+    def set_segmentation(self, pts_img):
+        self._seg_points = [QPointF(p[0], p[1]) if not isinstance(p, QPointF) else p for p in pts_img]
+        self.update()
 
-        # Overlay-Linie oben drauf
-        if len(self._seg_points) >= 2:
-            pen = QPen(self._overlay_color, self._overlay_width)
-            painter.setPen(pen)
-            last = None
-            for pt_img in self._seg_points:
-                pt_w = self._image_to_widget(pt_img, rect)
-                if last is not None:
-                    painter.drawLine(last, pt_w)
-                last = pt_w
+    def clear_segmentation(self):
+        self._seg_points.clear()
+        self.update()
 
-        painter.end()
-
-    # -------------------- Helpers --------------------
+    # ---- Helpers ----
     def _has_image_url(self, event) -> bool:
         md = event.mimeData()
         if not md.hasUrls():
@@ -193,26 +132,99 @@ class ImageDropArea(QLabel):
                 return True
         return False
 
+    def _update_pixmap(self):
+        if not self._pixmap:
+            self.clear()
+            return
+        scaled = self._pixmap.scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.setPixmap(scaled)
+        self.setText("")  # Platzhalter ausblenden
+
+    def show_qimage(self, qimg: QImage):
+        self._pixmap = QPixmap.fromImage(qimg)
+        self._update_pixmap()
+        self.setText("")
+
+    # Mouse Actions
+    def mousePressEvent(self, e):
+        # Roh-Log, damit wir sehen, ob Events ankommen:
+        # (Achtung: kommt auch bei IDLE)
+        # print("[DropArea] mousePress", e.button(), "status=", self._status)
+
+        if self._status == MouseStatus.DRAW_SEG and self._pixmap and e.button() in DRAW_BUTTONS:
+            img_pt = self._widget_to_image(e.position())
+            print("[DropArea] PRESS ok, img_pt=", img_pt)  # DEBUG
+            if img_pt is not None:
+                self._rmb_down = True
+                self.segDrawStart.emit(img_pt.x(), img_pt.y())
+                e.accept(); return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if (self._status == MouseStatus.DRAW_SEG and self._pixmap and self._rmb_down and
+                (e.buttons() & Qt.MouseButton.LeftButton or e.buttons() & Qt.MouseButton.RightButton)):
+            img_pt = self._widget_to_image(e.position())
+            if img_pt is not None:
+                # DEBUG:
+                # print("[DropArea] move", img_pt.x(), img_pt.y())
+                self.segDrawMove.emit(img_pt.x(), img_pt.y())
+                e.accept()
+                return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self._status == MouseStatus.DRAW_SEG and self._rmb_down and e.button() in DRAW_BUTTONS:
+            self._rmb_down = False
+            img_pt = self._widget_to_image(e.position())
+            print("[DropArea] release img_pt=", img_pt)  # DEBUG
+            if img_pt is not None:
+                self.segDrawEnd.emit(img_pt.x(), img_pt.y())
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+
+    # Paint
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if not self._pixmap or len(self._seg_points) < 2:
+            return
+        rect = self._target_rect()
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(QPen(self._overlay_color, self._overlay_width))
+        last = None
+        for pt_img in self._seg_points:
+            wpt = self._image_to_widget(pt_img, rect)
+            if last is not None:
+                p.drawLine(last, wpt)
+            last = wpt
+        p.end()
+
+    # Helper Functions
     def _target_rect(self) -> QRect:
-        """Bereich, in dem die Pixmap (aspect-fit) innerhalb des Widgets liegt."""
+        """Bereich, in dem das Bild zentriert mit KeepAspectRatio liegt."""
         if not self._pixmap:
             return QRect(0, 0, self.width(), self.height())
         W, H = self.width(), self.height()
         iw, ih = self._pixmap.width(), self._pixmap.height()
-        if iw == 0 or ih == 0:
-            return QRect(0, 0, W, H)
-        scale = min(W / iw, H / ih)
-        dw, dh = int(iw * scale), int(ih * scale)
-        x = (W - dw) // 2
-        y = (H - dh) // 2
-        return QRect(x, y, dw, dh)
+        if iw <= 0 or ih <= 0 or W <= 0 or H <= 0:
+            return QRect(0, 0, 0, 0)
+        s = min(W / iw, H / ih)
+        dw, dh = int(iw * s), int(ih * s)
+        return QRect((W - dw) // 2, (H - dh) // 2, dw, dh)
 
     def _widget_to_image(self, posf) -> QPointF | None:
-        """Widget- → Bildkoordinaten. None, wenn außerhalb/degeneriert."""
+        """Widget→Bild-Koordinaten (float). None, wenn außerhalb/degeneriert."""
         if not self._pixmap:
             return None
         rect = self._target_rect()
-        if rect.width() <= 0 or rect.height() <= 0:   # <- 0-Schutz
+        if rect.width() <= 0 or rect.height() <= 0:
             return None
         xw, yw = float(posf.x()), float(posf.y())
         if not rect.contains(int(xw), int(yw)):
@@ -226,7 +238,7 @@ class ImageDropArea(QLabel):
         return QPointF(xi, yi)
 
     def _image_to_widget(self, pt_img: QPointF, rect: QRect):
-        """Bild- → Widgetkoordinaten innerhalb rect."""
+        """Bild→Widget-Koordinaten (float) innerhalb 'rect'."""
         if rect.width() <= 0 or rect.height() <= 0:
             return pt_img
         iw, ih = self._pixmap.width(), self._pixmap.height()
