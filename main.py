@@ -1,7 +1,6 @@
 # main.py
 import sys
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QTimer, Qt
 from View.gui import MicroPerimetryGUI
 
 def main():

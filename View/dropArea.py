@@ -1,9 +1,10 @@
 from PyQt6.QtWidgets import QLabel
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRect, QRectF
+from PyQt6.QtCore import QRect, QRectF
 from pathlib import Path
 from Controller.enums import MouseStatus
-from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QBrush  # <-- QBrush dazu
-
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF
+from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QBrush, QWheelEvent
+import math
 
 DRAW_BUTTONS = {Qt.MouseButton.LeftButton}
 ALLOWED_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
@@ -60,6 +61,30 @@ class ImageDropArea(QLabel):
         self._edit_active: bool = False
         self._edit_last_img: QPointF | None = None
 
+        # Zooming
+        self._zoom: float = 1.0
+        self._center: QPointF | None = None  # Bildkoordinaten des View-Zentrum
+
+    # ------ Zoom Function ------
+    def current_scale(self) -> float:
+        if not self._pixmap or self.width() <= 0 or self.height() <= 0:
+            return 1.0
+        iw, ih = self._pixmap.width(), self._pixmap.height()
+        base = min(self.width() / iw, self.height() / ih)
+        return base * self._zoom
+
+    # Praktisch für Controller: Bildschirm-Pixel -> Bild-Pixel
+    def screen_to_image_dist(self, d_screen: float) -> float:
+        return d_screen / self.current_scale()
+
+    # Beim Laden/Drop: View zurücksetzen
+    def _reset_view(self):
+        if not self._pixmap:
+            return
+        self._zoom = 1.0
+        iw, ih = self._pixmap.width(), self._pixmap.height()
+        self._center = QPointF(iw / 2.0, ih / 2.0)
+
     # ---- Drag & Drop ----
     def dragEnterEvent(self, event):
         # Dragging into the dropArea Widget
@@ -97,16 +122,16 @@ class ImageDropArea(QLabel):
         self._path = path
         self._seg_points.clear()
         self._points.clear()
-        self._update_pixmap()
+        self._reset_view()
         self.setProperty("dragActive", False)
-        self.style().unpolish(self); self.style().polish(self)
-        self.imageDropped.emit(path)
-        event.acceptProposedAction()
+
+        self.setPixmap(QPixmap())  # <<< wichtig: internes QLabel-Pixmap leeren
         self.setText("")
+        self.update()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._update_pixmap()
+        self.update()
 
     # ---- Public API ----
     def set_mouse_status(self, status: MouseStatus):
@@ -119,9 +144,11 @@ class ImageDropArea(QLabel):
         self._pixmap = pm
         self._path = path
         self._seg_points.clear()
+        self._points.clear()
+        self._reset_view()
+        self.setPixmap(QPixmap())  # <<< wichtig
         self.setText("")
-        self._update_pixmap()  # QLabel bekommt die skalierte Pixmap
-        self.imageDropped.emit(path)
+        self.update()
         return True
 
     def clear_image(self):
@@ -165,22 +192,12 @@ class ImageDropArea(QLabel):
                 return True
         return False
 
-    def _update_pixmap(self):
-        if not self._pixmap:
-            self.clear()
-            return
-        scaled = self._pixmap.scaled(
-            self.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        self.setPixmap(scaled)
-        self.setText("")  # Platzhalter ausblenden
-
     def show_qimage(self, qimg: QImage):
-        self._pixmap = QPixmap.fromImage(qimg)
-        self._update_pixmap()
+        self._reset_view()
+        self.setPixmap(QPixmap())  # <<< wichtig
         self.setText("")
+        self.update()
+        return True
 
     # Mouse Actions
     def mousePressEvent(self, e):
@@ -209,7 +226,7 @@ class ImageDropArea(QLabel):
                 self._del_start_img = img_pt
                 self._del_cur_img = img_pt
                 self.update()  # Rechteck-Vorschau anzeigen
-                e.accept();
+                e.accept()
                 return
 
         # --- EDIT_SEG: linken Button drücken um auf Linie "einzuhaken"
@@ -288,88 +305,144 @@ class ImageDropArea(QLabel):
 
         super().mouseReleaseEvent(e)
 
-    # Paint
-    def paintEvent(self, e):
-        super().paintEvent(e)
-
+    # Mouse Wheel = Zoom-to-Mouse
+    def wheelEvent(self, e: QWheelEvent):
         if not self._pixmap:
             return
+        if self._center is None:
+            self._reset_view()
 
-        rect = self._target_rect()
-        if rect.width() <= 0 or rect.height() <= 0:
+        # 1 "tick" = 120
+        steps = e.angleDelta().y() / 120.0
+        if steps == 0:
             return
 
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        # Draw Seg
-        p.setPen(QPen(self._overlay_color, self._overlay_width))
-        last = None
-        for pt_img in self._seg_points:
-            wpt = self._image_to_widget(pt_img, rect)
-            if last is not None:
-                p.drawLine(last, wpt)
-            last = wpt
+        old_scale = self.current_scale()
+        factor = 1.2 ** steps
+        new_zoom = max(0.1, min(self._zoom * factor, 40.0))  # clamp
 
-        # Draw Pts
+        # Bildpunkt unter Cursor vor dem Zoom:
+        img_pt = self._widget_to_image(e.position())
+        self._zoom = new_zoom
+
+        # Zentrum anpassen, sodass img_pt unter Cursor bleibt:
+        if img_pt is not None:
+            s = self.current_scale()
+            W, H = float(self.width()), float(self.height())
+            xw, yw = float(e.position().x()), float(e.position().y())
+            cx = img_pt.x() - (xw - W / 2.0) / s
+            cy = img_pt.y() - (yw - H / 2.0) / s
+            self._center = QPointF(cx, cy)
+            self._clamp_center()
+
+        self.update()
+
+    # Paint: Bild + Overlays in Widgetkoordinaten (pixelfest)
+    def paintEvent(self, e):
+        if not self._pixmap:
+            return
+        if self._center is None:
+            self._reset_view()
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        s = self.current_scale()
+        iw, ih = self._pixmap.width(), self._pixmap.height()
+        W, H = self.width(), self.height()
+
+        # Bild zeichnen: Ziel-Rect aus center+scale
+        x = (W / 2.0) - self._center.x() * s
+        y = (H / 2.0) - self._center.y() * s
+        p.drawPixmap(int(x), int(y), int(iw * s), int(ih * s), self._pixmap)
+
+        # Overlays: immer in Widget-Pixeln
+        # 1) Seg-Linie
+        if len(self._seg_points) >= 2:
+            pen = QPen(self._overlay_color, self._overlay_width)
+            pen.setCosmetic(True)  # LINIE BLEIBT GLEICH DICK
+            p.setPen(pen)
+            last = None
+            for pt_img in self._seg_points:
+                wpt = self._image_to_widget(pt_img)
+                if last is not None:
+                    p.drawLine(last, wpt)
+                last = wpt
+
+        # 2) Punkte
         if self._points:
-            p.setPen(QPen(self._points_color, 1))
+            pen = QPen(self._points_color, 1)
+            pen.setCosmetic(True)
+            p.setPen(pen)
             p.setBrush(QBrush(self._points_color))
-            r = self._points_radius
+            r = self._points_radius  # Radius in Screen-Pixeln
             for pt_img in self._points:
-                wpt = self._image_to_widget(pt_img, rect)
+                wpt = self._image_to_widget(pt_img)
                 p.drawEllipse(wpt, r, r)
 
-        # 3) Aktives Löschrechteck (nur während Drag)
+        # 3) Delete-Rect (falls aktiv) – wie gehabt ...
         if self._del_active and self._del_start_img and self._del_cur_img:
-            a = self._image_to_widget(self._del_start_img, rect)
-            b = self._image_to_widget(self._del_cur_img, rect)
-            x = min(a.x(), b.x())
-            y = min(a.y(), b.y())
-            w = abs(a.x() - b.x())
-            h = abs(a.y() - b.y())
-            r = QRectF(x, y, w, h)
-            p.setPen(self._rect_pen)
-            p.setBrush(self._rect_brush)
-            p.drawRect(r)
+            a = self._image_to_widget(self._del_start_img)
+            b = self._image_to_widget(self._del_cur_img)
+            rx = min(a.x(), b.x())
+            ry = min(a.y(), b.y())
+            rw = abs(a.x() - b.x())
+            rh = abs(a.y() - b.y())
+            rect_pen = QPen(QColor(0, 255, 0), 1, Qt.PenStyle.DashLine)
+            rect_pen.setCosmetic(True)
+            p.setPen(rect_pen)
+            p.setBrush(QBrush(QColor(0, 255, 0, 40)))
+            p.drawRect(rx, ry, rw, rh)
 
         p.end()
 
-    # Helper Functions
-    def _target_rect(self) -> QRect:
-        """Bereich, in dem das Bild zentriert mit KeepAspectRatio liegt."""
-        if not self._pixmap:
-            return QRect(0, 0, self.width(), self.height())
-        W, H = self.width(), self.height()
-        iw, ih = self._pixmap.width(), self._pixmap.height()
-        if iw <= 0 or ih <= 0 or W <= 0 or H <= 0:
-            return QRect(0, 0, 0, 0)
-        s = min(W / iw, H / ih)
-        dw, dh = int(iw * s), int(ih * s)
-        return QRect((W - dw) // 2, (H - dh) // 2, dw, dh)
-
-    def _widget_to_image(self, posf) -> QPointF | None:
-        """Widget→Bild-Koordinaten (float). None, wenn außerhalb/degeneriert."""
-        if not self._pixmap:
-            return None
-        rect = self._target_rect()
-        if rect.width() <= 0 or rect.height() <= 0:
-            return None
-        xw, yw = float(posf.x()), float(posf.y())
-        if not rect.contains(int(xw), int(yw)):
-            return None
-        iw, ih = self._pixmap.width(), self._pixmap.height()
-        xi = (xw - rect.x()) * iw / rect.width()
-        yi = (yw - rect.y()) * ih / rect.height()
-        # clamp
-        xi = max(0.0, min(xi, iw - 1.0))
-        yi = max(0.0, min(yi, ih - 1.0))
-        return QPointF(xi, yi)
-
-    def _image_to_widget(self, pt_img: QPointF, rect: QRect):
-        """Bild→Widget-Koordinaten (float) innerhalb 'rect'."""
-        if rect.width() <= 0 or rect.height() <= 0:
-            return pt_img
-        iw, ih = self._pixmap.width(), self._pixmap.height()
-        xw = rect.x() + (pt_img.x() * rect.width() / iw)
-        yw = rect.y() + (pt_img.y() * rect.height() / ih)
+    # Helper Functions for Zooming function
+    # -------------------------------------------------
+    # Mapping: Bild <-> Widget MIT center/zoom
+    def _image_to_widget(self, pt_img: QPointF) -> QPointF:
+        s = self.current_scale()
+        W, H = float(self.width()), float(self.height())
+        cx, cy = float(self._center.x()), float(self._center.y())
+        xw = W / 2.0 + (pt_img.x() - cx) * s
+        yw = H / 2.0 + (pt_img.y() - cy) * s
         return QPointF(xw, yw)
+
+    def _widget_to_image(self, posf, *, allow_outside: bool = False) -> QPointF | None:
+        if not self._pixmap:
+            return None
+        s = self.current_scale()
+        W, H = float(self.width()), float(self.height())
+        cx, cy = float(self._center.x()), float(self._center.y())
+        xi = cx + (float(posf.x()) - W / 2.0) / s
+        yi = cy + (float(posf.y()) - H / 2.0) / s
+        # Begrenzen auf Bild
+        if allow_outside:
+            xi = max(0.0, min(xi, self._pixmap.width() - 1.0))
+            yi = max(0.0, min(yi, self._pixmap.height() - 1.0))
+            return QPointF(xi, yi)
+        if 0.0 <= xi < self._pixmap.width() and 0.0 <= yi < self._pixmap.height():
+            return QPointF(xi, yi)
+        return None
+
+    def _clamp_center(self):
+        """Sorge dafür, dass beim Zoomen nicht komplett 'ins Leere' gepannt wird."""
+        if not self._pixmap or self._center is None:
+            return
+        iw, ih = self._pixmap.width(), self._pixmap.height()
+        s = self.current_scale()
+        half_w_img = self.width() / (2.0 * s)
+        half_h_img = self.height() / (2.0 * s)
+
+        # Falls View größer als Bild -> Mittelpunkt setzen
+        if half_w_img >= iw / 2.0:
+            cx_min = cx_max = iw / 2.0
+        else:
+            cx_min, cx_max = half_w_img, iw - half_w_img
+
+        if half_h_img >= ih / 2.0:
+            cy_min = cy_max = ih / 2.0
+        else:
+            cy_min, cy_max = half_h_img, ih - half_h_img
+
+        cx = min(max(self._center.x(), cx_min), cx_max)
+        cy = min(max(self._center.y(), cy_min), cy_max)
+        self._center = QPointF(cx, cy)

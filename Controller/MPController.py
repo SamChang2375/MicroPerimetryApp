@@ -66,13 +66,12 @@ class ImageController(QObject):
             t.timeout.connect(lambda pid=pid: self._launch_processing(pid))
             self._debounce[pid] = t
 
-        self._edit_anchor_idx: int | None = None
-        self._edit_window_idx: list[int] = []
-        self._edit_weights: list[float] = []
-        self._edit_last_xy: tuple[float, float] | None = None
-        # einstellbare Parameter
-        self._edit_hit_radius = 8.0  # px um überhaupt „zu greifen“
-        self._edit_window_radius_px = 15.0  # ±15 px entlang der Kurve => 30 px total
+        # im Controller.__init__
+        self.edit_R_screen = 30.0  # 30 px auf dem Bildschirm
+        self.edit_strength = 1.0  # wie bisher
+        self.edit_sigma = self.edit_R_screen * 0.5
+        self._edit_last_xy = None
+        self._edit_hit_radius = 8.0  # optionaler Hit-Test
         self._wire_view()
 
     # --- Wiring ---
@@ -154,28 +153,20 @@ class ImageController(QObject):
             drop.set_mouse_status(MouseStatus.EDIT_SEG)
             drop.set_draw_cursor(True)
 
-    import math
-
-    def _hr_edit_start(self, x: float, y: float):
+    def _hr_edit_start(self, x, y):
         if self.status != MouseStatus.EDIT_SEG:
             return
-        st = self.states["highres"]
-        pts = st.seg_points
-        if not pts:
+        drop = self.view.dropHighRes
+        idx, dist = self._nearest_seg_point_index(self.states["highres"].seg_points, x, y)
+        if idx is None:
             return
-
-        idx, d = self._nearest_seg_point_index(pts, x, y)
-        if idx is None or d > self._edit_hit_radius:
-            # nichts unter dem Cursor – Session ignorieren
+        hit_r_img = self._edit_hit_radius / max(1e-6, drop.current_scale())  # 8px auf dem Screen
+        if dist > hit_r_img:
             return
-
-        self._edit_anchor_idx = idx
-        self._edit_window_idx, self._edit_weights = self._build_edit_window(pts, idx, self._edit_window_radius_px)
         self._edit_last_xy = (x, y)
-        # optional: print(f"[HighRes] EDIT start idx={idx}, window={len(self._edit_window_idx)}")
 
-    def _hr_edit_move(self, x: float, y: float):
-        if self.status != MouseStatus.EDIT_SEG or self._edit_last_xy is None or self._edit_anchor_idx is None:
+    def _hr_edit_move(self, x, y):
+        if self.status != MouseStatus.EDIT_SEG or self._edit_last_xy is None:
             return
         st = self.states["highres"]
         pts = st.seg_points
@@ -183,24 +174,43 @@ class ImageController(QObject):
             return
 
         lx, ly = self._edit_last_xy
-        dx, dy = (x - lx), (y - ly)
+        dx, dy = x - lx, y - ly
         if dx == 0 and dy == 0:
             return
 
-        for j, w in zip(self._edit_window_idx, self._edit_weights):
-            px, py = pts[j]
-            pts[j] = (px + w * dx, py + w * dy)  # 2D-Verschiebung
+        drop = self.view.dropHighRes
+        s = drop.current_scale()
+        R_img = self.edit_R_screen / s
+        sigma = max(1.0, R_img * 0.5)
 
+        R2 = R_img * R_img
+        two_sigma2 = 2.0 * sigma * sigma
+        import math
+        for i, (px, py) in enumerate(pts):
+            d2 = (px - x) * (px - x) + (py - y) * (py - y)
+            if d2 > R2:
+                continue
+            w = math.exp(-d2 / two_sigma2) * self.edit_strength
+            pts[i] = (px + w * dx, py + w * dy)
+
+        self._laplacian_smooth(pts, iters=1, lam=0.2 * (1.0 / max(1.0, s)) ** 0.3)
+        drop.set_segmentation(pts)
         self._edit_last_xy = (x, y)
-        self.view.dropHighRes.set_segmentation(pts)
 
-    def _hr_edit_end(self, x: float, y: float):
-        if self.status != MouseStatus.EDIT_SEG:
-            return
-        self._edit_anchor_idx = None
-        self._edit_window_idx = []
-        self._edit_weights = []
+    def _hr_edit_end(self, x, y):
         self._edit_last_xy = None
+
+    def _laplacian_smooth(self, pts, iters=1, lam=0.2):
+        n = len(pts)
+        for _ in range(iters):
+            new = pts[:]
+            for i in range(1, n - 1):
+                ax, ay = pts[i - 1]
+                bx, by = pts[i + 1]
+                cx, cy = pts[i]
+                mx, my = (ax + bx) / 2.0, (ay + by) / 2.0
+                new[i] = (cx + lam * (mx - cx), cy + lam * (my - cy))
+            pts[:] = new
 
     # Delete functionality
     def HR_del_str_activate(self):
@@ -405,9 +415,9 @@ class ImageController(QObject):
 
     # Helper Functions
     def _euclid(self, a: tuple[float, float], b: tuple[float, float]) -> float:
-        ax, ay = a;
+        ax, ay = a
         bx, by = b
-        dx = ax - bx;
+        dx = ax - bx
         dy = ay - by
         return (dx * dx + dy * dy) ** 0.5
 
