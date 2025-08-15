@@ -16,6 +16,7 @@ class ImageState:
     brightness: int = 0
     version: int = 0
     seg_points: list[tuple[float, float]] = field(default_factory=list)
+    pts_points: list[tuple[float, float]] = field(default_factory=list)
 
 # --- Worker Infrastruktur ---
 class _ResultSignal(QObject):
@@ -100,6 +101,7 @@ class ImageController(QObject):
         btn = v.topRightPanel.toolbarButtons.get("Reset")
         if btn: btn.clicked.connect(lambda: self.reset_adjustments("micro"))
 
+        # Draw Segmentations
         drawSegHRbtn = v.topLeftPanel.toolbarButtons.get("Draw Seg")
         drawSegHRbtn.clicked.connect(self.HR_draw_seg_activate)
 
@@ -111,7 +113,31 @@ class ImageController(QObject):
         v.dropHighRes.segDrawMove.connect(lambda x, y: None)  # zu laut; ggf. testweise: print(...)
         v.dropHighRes.segDrawEnd.connect(lambda x, y: print(f"[Signal] end   ({x:.1f}, {y:.1f})"))
 
-    # Draw Segmentation
+        # Draw Points
+        drawPtsHRbtn = v.topLeftPanel.toolbarButtons.get("Draw Pts")  # <-- neu
+        if drawPtsHRbtn:
+            drawPtsHRbtn.clicked.connect(self.HR_draw_pts_activate)
+        v.dropHighRes.pointAdded.connect(self._hr_point_added)  # <-- neu
+        v.dropHighRes.pointAdded.connect(lambda x, y: print(f"[Signal] point ({x:.1f}, {y:.1f})"))  # Console-Log
+
+    # Draw Points Functions
+    def HR_draw_pts_activate(self):  # <-- neu
+        print("Draw Pts clicked!")
+        self.status = MouseStatus.DRAW_PTS
+        drop = self.view.dropHighRes
+        if drop:
+            drop.set_mouse_status(MouseStatus.DRAW_PTS)
+            drop.set_draw_cursor(True)
+        # NICHTS löschen – vorhandene Seg/Points bleiben sichtbar
+
+    # --- Point-Handler (nur HighRes; analog für andere Panels möglich) ---
+    def _hr_point_added(self, x: float, y: float):  # <-- neu
+        st = self.states["highres"]
+        st.pts_points.append((x, y))
+        self.view.dropHighRes.set_points(st.pts_points)
+        print(f"[HighRes] POINT  ({x:.1f}, {y:.1f})")
+
+    # Draw Segmentation Functions
     def HR_draw_seg_activate(self):
         print("Draw Seg clicked!")
         self.status = MouseStatus.DRAW_SEG

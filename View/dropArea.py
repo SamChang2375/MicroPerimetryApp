@@ -1,8 +1,9 @@
 from PyQt6.QtWidgets import QLabel
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRect
-from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage
 from pathlib import Path
 from Controller.enums import MouseStatus
+from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QBrush  # <-- QBrush dazu
+
 
 DRAW_BUTTONS = {Qt.MouseButton.LeftButton}
 ALLOWED_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
@@ -20,6 +21,8 @@ class ImageDropArea(QLabel):
     segDrawMove = pyqtSignal(float, float)
     segDrawEnd = pyqtSignal(float, float)
 
+    pointAdded = pyqtSignal(float, float)
+
     def __init__(self, placeholder: str = "Drag & Drop the image here"):
         # Initialize the default (start-up)
         super().__init__(placeholder)
@@ -35,7 +38,11 @@ class ImageDropArea(QLabel):
         self._rmb_down: bool = False
         self._seg_points: list[QPointF] = []  # aktuelle Polyline in Bildkoordinaten
         self._overlay_color = QColor(255, 0, 0)
-        self._overlay_width = 10
+        self._overlay_width = 1
+
+        self._points: list[QPointF] = []
+        self._points_color = QColor(0, 0, 255)
+        self._points_radius = 5
 
     # ---- Drag & Drop ----
     def dragEnterEvent(self, event):
@@ -73,6 +80,7 @@ class ImageDropArea(QLabel):
         self._pixmap = pm
         self._path = path
         self._seg_points.clear()
+        self._points.clear()
         self._update_pixmap()
         self.setProperty("dragActive", False)
         self.style().unpolish(self); self.style().polish(self)
@@ -122,6 +130,15 @@ class ImageDropArea(QLabel):
         self._seg_points.clear()
         self.update()
 
+    # Set points
+    def set_points(self, pts_img):
+        self._points = [QPointF(p[0], p[1]) if not isinstance(p, QPointF) else p for p in pts_img]
+        self.update()
+
+    def clear_points(self):
+        self._points.clear()
+        self.update()
+
     # ---- Helpers ----
     def _has_image_url(self, event) -> bool:
         md = event.mimeData()
@@ -154,6 +171,12 @@ class ImageDropArea(QLabel):
         # Roh-Log, damit wir sehen, ob Events ankommen:
         # (Achtung: kommt auch bei IDLE)
         # print("[DropArea] mousePress", e.button(), "status=", self._status)
+        if self._status == MouseStatus.DRAW_PTS and self._pixmap and e.button() == Qt.MouseButton.LeftButton:
+            img_pt = self._widget_to_image(e.position())
+            if img_pt is not None:
+                self.pointAdded.emit(img_pt.x(), img_pt.y())  # <-- neu
+                e.accept()
+                return
 
         if self._status == MouseStatus.DRAW_SEG and self._pixmap and e.button() in DRAW_BUTTONS:
             img_pt = self._widget_to_image(e.position())
@@ -162,6 +185,7 @@ class ImageDropArea(QLabel):
                 self._rmb_down = True
                 self.segDrawStart.emit(img_pt.x(), img_pt.y())
                 e.accept(); return
+
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
@@ -190,7 +214,8 @@ class ImageDropArea(QLabel):
     # Paint
     def paintEvent(self, e):
         super().paintEvent(e)
-        if not self._pixmap or len(self._seg_points) < 2:
+        # Draw Seg
+        if not self._pixmap:
             return
         rect = self._target_rect()
         if rect.width() <= 0 or rect.height() <= 0:
@@ -204,6 +229,16 @@ class ImageDropArea(QLabel):
             if last is not None:
                 p.drawLine(last, wpt)
             last = wpt
+
+        # Draw Pts
+        if self._points:
+            p.setPen(QPen(self._points_color, 1))
+            p.setBrush(QBrush(self._points_color))
+            r = self._points_radius
+            for pt_img in self._points:
+                wpt = self._image_to_widget(pt_img, rect)
+                p.drawEllipse(wpt, r, r)
+
         p.end()
 
     # Helper Functions
