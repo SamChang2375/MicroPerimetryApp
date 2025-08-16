@@ -12,6 +12,7 @@ class Panel(QFrame):
 
         # Title
         self.titleLabel = QLabel(title)
+        self.titleLabel.setContentsMargins(4, 4, 4, 4)
         self.titleLabel.setFixedHeight(20)
         self.titleLabel.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
 
@@ -28,7 +29,7 @@ class Panel(QFrame):
         self.contentArea.setObjectName("contentArea")
         self.contentArea.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        # Layout zusammenbauen
+        # Build the panel layout
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
@@ -67,23 +68,18 @@ class Panel(QFrame):
         brightness_default: int = 0,
         slider_min_width: int = 120,
     ):
-        """
-        Adds two sliders:
-        Contrast from 0 - 200, default 100
-        Brightness from 0 - 100, default 0
-        """
         if self.contrastSlider is not None or self.brightnessSlider is not None:
-            return  # schon hinzugefügt
+            return  # alrady added
 
         stretch_item = self._tbLayout.takeAt(self._tbLayout.count() - 1)
 
-        # Optional kleine Labels
+        # add the labels of the sliders
         if with_labels:
             lbl_c = QLabel("Contrast")
             lbl_c.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
             self._tbLayout.addWidget(lbl_c)
 
-        # Kontrast-Slider
+        # Contrast-slider
         self.contrastSlider = QSlider(Qt.Orientation.Horizontal)
         self.contrastSlider.setRange(*contrast_range)
         self.contrastSlider.setValue(contrast_default)
@@ -98,7 +94,7 @@ class Panel(QFrame):
             lbl_b.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
             self._tbLayout.addWidget(lbl_b)
 
-        # Helligkeit-Slider
+        # Brightness-slider
         self.brightnessSlider = QSlider(Qt.Orientation.Horizontal)
         self.brightnessSlider.setRange(*brightness_range)
         self.brightnessSlider.setValue(brightness_default)
@@ -108,11 +104,11 @@ class Panel(QFrame):
         self.brightnessSlider.setObjectName("BrightnessSlider")
         self._tbLayout.addWidget(self.brightnessSlider)
 
-        # Stretch wieder ans Ende
+        # Add the stretch again to the end to fill up the remaining space
         self._tbLayout.addItem(stretch_item)
 
     def set_content(self, widget: QWidget):
-        # Replaces the content through own widget (DropArea-Object)
+        # Replaces the content through own widget
         layout = self.layout()
         layout.removeWidget(self.contentArea)
         self.contentArea.deleteLater()
