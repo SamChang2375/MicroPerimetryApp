@@ -23,7 +23,7 @@ def apply_contrast_brightness(qimg: QImage, contrast_percent: int, brightness_pe
     arr = arr[:, :w * 4].reshape((h, w, 4)).astype(np.float32)
 
     # Parameter-Mapping
-    alpha = max(0.0, contrast_percent) / 100.0        # 0..2.0
+    alpha = max(0.0, contrast_percent) / 150.0        # 0..2.0
     beta = float(brightness_percent) * 2.55           # -255..255
 
     # Nur RGB anpassen, Alpha unverändert lassen

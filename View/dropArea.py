@@ -1,10 +1,9 @@
 from PyQt6.QtWidgets import QLabel
-from PyQt6.QtCore import QRect, QRectF
+from PyQt6.QtCore import QRectF
 from pathlib import Path
 from Controller.enums import MouseStatus
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QBrush, QWheelEvent
-import math
 
 DRAW_BUTTONS = {Qt.MouseButton.LeftButton}
 ALLOWED_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
@@ -92,7 +91,7 @@ class ImageDropArea(QLabel):
             print("[DND] accept")
             event.acceptProposedAction()
             self.setProperty("dragActive", True)
-            self.style().unpolish(self);
+            self.style().unpolish(self)
             self.style().polish(self)
         else:
             print("[DND] ignore")
@@ -352,8 +351,10 @@ class ImageDropArea(QLabel):
 
     # Paint: Bild + Overlays in Widgetkoordinaten (pixelfest)
     def paintEvent(self, e):
-        if not self._pixmap:
+        if self._pixmap is None:
+            super().paintEvent(e)
             return
+
         if self._center is None:
             self._reset_view()
 
@@ -363,7 +364,6 @@ class ImageDropArea(QLabel):
         iw, ih = self._pixmap.width(), self._pixmap.height()
         W, H = self.width(), self.height()
 
-        # Bild zeichnen: Ziel-Rect aus center+scale
         x = (W / 2.0) - self._center.x() * s
         y = (H / 2.0) - self._center.y() * s
         p.drawPixmap(int(x), int(y), int(iw * s), int(ih * s), self._pixmap)
@@ -392,7 +392,7 @@ class ImageDropArea(QLabel):
                 wpt = self._image_to_widget(pt_img)
                 p.drawEllipse(wpt, r, r)
 
-        # 3) Delete-Rect (falls aktiv) – wie gehabt ...
+        # 3) Delete-Rect (falls active) – wie gehabt ...
         if self._del_active and self._del_start_img is not None and self._del_cur_img is not None:
             a = self._image_to_widget(self._del_start_img)
             b = self._image_to_widget(self._del_cur_img)
