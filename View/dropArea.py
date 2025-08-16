@@ -87,12 +87,15 @@ class ImageDropArea(QLabel):
 
     # ---- Drag & Drop ----
     def dragEnterEvent(self, event):
-        # Dragging into the dropArea Widget
+        print("[DND] dragEnter", event.mimeData().formats())
         if self._has_image_url(event):
+            print("[DND] accept")
             event.acceptProposedAction()
             self.setProperty("dragActive", True)
-            self.style().unpolish(self); self.style().polish(self)
+            self.style().unpolish(self);
+            self.style().polish(self)
         else:
+            print("[DND] ignore")
             event.ignore()
 
     def dragMoveEvent(self, event):

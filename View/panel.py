@@ -4,7 +4,6 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-
 class Panel(QFrame):
     def __init__(self, title: str):
         super().__init__()

@@ -4,14 +4,11 @@ from .dropArea import ImageDropArea
 from Controller.MPController import ImageController
 from .panel import Panel
 
-
 class MicroPerimetryGUI(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MicroPerimetryApp")
-        self.setFixedSize(1920 , 1080)
         self._init_ui()
-        # Controller erstellen (verdrahtet sich selbst mit der View)
         self.controller = ImageController(self)
 
     def _init_ui(self):
@@ -19,6 +16,7 @@ class MicroPerimetryGUI(QWidget):
         palette = self.palette()
         self.setPalette(palette)
         self.setAutoFillBackground(True)
+        self.setMinimumSize(900, 600)
 
         # Build Splitter structure
         mainSplitter = QSplitter(Qt.Orientation.Horizontal)   # links/rechts
@@ -39,14 +37,16 @@ class MicroPerimetryGUI(QWidget):
         mainSplitter.addWidget(leftSplitter)
         mainSplitter.addWidget(rightSplitter)
 
-        # Starting panel window size + resizing panels
-        leftSplitter.setSizes([200, 200])
-        rightSplitter.setSizes([350, 50])
-        mainSplitter.setSizes([500, 700])
-        mainSplitter.setStretchFactor(0, 1)
-        mainSplitter.setStretchFactor(1, 2)
+        mainSplitter.setStretchFactor(0, 1)  # links
+        mainSplitter.setStretchFactor(1, 2)  # rechts
+
+        # oben/unten
         leftSplitter.setStretchFactor(0, 1)
         leftSplitter.setStretchFactor(1, 1)
+
+        rightSplitter.setStretchFactor(0, 3)  # MP oben
+        rightSplitter.setStretchFactor(1, 1)  # Compute unten
+        # die setSizes(...) kannst du dann weglassen
 
         # Set Main Layout
         layout = QVBoxLayout(self)
@@ -77,6 +77,11 @@ class MicroPerimetryGUI(QWidget):
             brightness_default=0,
             slider_min_width=140  # ggf. anpassen, wenn es eng wird
         )
+        self.topLeftPanel.toolbarButtons["Draw Seg"].setToolTip("Segmentation-Linie zeichnen (Freihand).")
+        self.topLeftPanel.toolbarButtons["Draw Pts"].setToolTip("Einzelne Punkte setzen.")
+        self.topLeftPanel.toolbarButtons["Edit Seg"].setToolTip("Seg-Linie lokal verschieben (Bearbeiten).")
+        self.topLeftPanel.toolbarButtons["Del Str"].setToolTip("Rechteck ziehen, um Punkte/Linie zu löschen.")
+        self.topLeftPanel.toolbarButtons["Reset"].setToolTip("Bild & Slider zurücksetzen.")
 
         # SD OCT Tools
         self.bottomLeftPanel.add_toolbar_buttons({
@@ -94,6 +99,11 @@ class MicroPerimetryGUI(QWidget):
             brightness_default=0,
             slider_min_width=140  # ggf. anpassen, wenn es eng wird
         )
+        self.bottomLeftPanel.toolbarButtons["Draw Seg"].setToolTip("Segmentation-Linie im SD-Bild zeichnen.")
+        self.bottomLeftPanel.toolbarButtons["Draw Pts"].setToolTip("Punkte im SD-Bild setzen.")
+        self.bottomLeftPanel.toolbarButtons["Edit Seg"].setToolTip("Seg-Linie im SD-Bild bearbeiten.")
+        self.bottomLeftPanel.toolbarButtons["Del Str"].setToolTip("Bereich im SD-Bild löschen.")
+        self.bottomLeftPanel.toolbarButtons["Reset"].setToolTip("Zurücksetzen (SD).")
 
         # Microperimetry Tools
         self.topRightPanel.add_toolbar_buttons({
@@ -109,12 +119,18 @@ class MicroPerimetryGUI(QWidget):
             brightness_default=0,
             slider_min_width=140  # ggf. anpassen, wenn es eng wird
         )
+        self.topRightPanel.toolbarButtons["Draw Pts"].setToolTip("MP-Punkte setzen.")
+        self.topRightPanel.toolbarButtons["Del Pts"].setToolTip("Bereich ziehen, um MP-Punkte zu löschen.")
+        self.topRightPanel.toolbarButtons["Reset"].setToolTip("Zurücksetzen (MP).")
 
         # Compute Buttoms
         self.bottomRightPanel.add_toolbar_buttons({
             "Compute Grids": self._btn("Compute Grids"),
             "Reset": self._btn("Reset")
         })
+        self.bottomRightPanel.toolbarButtons["Compute Grids"].setToolTip(
+            "Aktuelle Annotations sammeln und Gitter berechnen.")
+        self.bottomRightPanel.toolbarButtons["Reset"].setToolTip("Alles im Compute-Panel zurücksetzen.")
 
     def _setup_drop_areas(self):
         # per panel an own ImageDropArea-Instance
