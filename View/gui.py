@@ -75,8 +75,6 @@ class MicroPerimetryGUI(QWidget):
         self._setup_toolbars()
         self._setup_drop_areas()
         self._setup_compute_controls()
-        self._connect_slider_signals()
-        self._connect_draw_seg()
 
     # Functions to build up interaction functionalities
     def _setup_toolbars(self):
@@ -256,53 +254,9 @@ class MicroPerimetryGUI(QWidget):
 
         self.bottomRightPanel.set_content(container)
 
-    def _connect_slider_signals(self):
-        # Connect Slider signals
-        # High Res Panel
-        if self.topLeftPanel.contrastSlider:
-            self.topLeftPanel.contrastSlider.valueChanged.connect(
-                lambda v: print(f"[HighRes] Contrast -> {v}")
-            )
-        if self.topLeftPanel.brightnessSlider:
-            self.topLeftPanel.brightnessSlider.valueChanged.connect(
-                lambda v: print(f"[HighRes] Brightness -> {v}")
-            )
-
-        # SD OCT Panel
-        if self.bottomLeftPanel.contrastSlider:
-            self.bottomLeftPanel.contrastSlider.valueChanged.connect(
-                lambda v: print(f"[SD] Contrast -> {v}")
-            )
-        if self.bottomLeftPanel.brightnessSlider:
-            self.bottomLeftPanel.brightnessSlider.valueChanged.connect(
-                lambda v: print(f"[SD] Brightness -> {v}")
-            )
-
-        # Microperimetry Panel
-        if self.topRightPanel.contrastSlider:
-            self.topRightPanel.contrastSlider.valueChanged.connect(
-                lambda v: print(f"[Micro] Contrast -> {v}")
-            )
-        if self.topRightPanel.brightnessSlider:
-            self.topRightPanel.brightnessSlider.valueChanged.connect(
-                lambda v: print(f"[Micro] Brightness -> {v}")
-            )
-
+    # "Recipe" to create buttons of the sam style
     @staticmethod
     def _btn(text: str) -> QPushButton:
         btn = QPushButton(text)
         btn.setMinimumHeight(36)
         return btn
-
-    def _connect_draw_seg(self):
-        for panel in (self.topLeftPanel, self.bottomLeftPanel, self.topRightPanel):
-            btn = panel.toolbarButtons.get("Draw Seg")
-            if btn:
-                btn.clicked.connect(self.clicked)
-
-    def clicked(self):
-        print("Button wurde geklickt!")
-
-    def _set_status(self, text: str):
-        if hasattr(self, "computeStatus") and self.computeStatus:
-            self.computeStatus.setText(text)

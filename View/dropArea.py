@@ -5,32 +5,29 @@ from Controller.enums import MouseStatus
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QBrush, QWheelEvent
 
-DRAW_BUTTONS = {Qt.MouseButton.LeftButton}
-ALLOWED_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
-
+ALLOWED = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"} # Allowed Image Formats
 
 class ImageDropArea(QLabel):
-    """
-    Drag&Drop-Widget for the images, based on QLabel
-    Aspect-Fit - it uses the whole area of the content panel
-    Each ImageDropArea can be accessed separately.
-    """
-    imageDropped = pyqtSignal(str)  # stores the path of the image file
+    # This class creates a Drag&Drop Widget for the images.
 
+    # The Signals (stored as class attributes) that receive the information from all user-interactions
+    # with the drop area (drawing points, ...)
+    imageDropped = pyqtSignal(str)  # stores the path of the image file
+    # Stores the coordinates of the segmentation
     segDrawStart = pyqtSignal(float, float)
     segDrawMove = pyqtSignal(float, float)
     segDrawEnd = pyqtSignal(float, float)
-
+    # stores the next drawn point
     pointAdded = pyqtSignal(float, float)
-
+    # stores the coordinates of the delete rectangle
     deleteRect = pyqtSignal(float, float, float, float)
-
+    # Stores the changed coordinates of the segmentation edit
     segEditStart = pyqtSignal(float, float)
     segEditMove = pyqtSignal(float, float)
     segEditEnd = pyqtSignal(float, float)
 
     def __init__(self, placeholder: str = "Drag & Drop the image here"):
-        # Initialize the default (start-up)
+        # Initialize the drop area
         super().__init__(placeholder)
         self.setObjectName("DropArea")
         self.setAcceptDrops(True) # activate Drag- and Drop
@@ -40,43 +37,308 @@ class ImageDropArea(QLabel):
         self._pixmap: QPixmap | None = None
         self._path: str | None = None
 
+        # Set Mouse status - IDLE.
         self._status: MouseStatus = MouseStatus.IDLE
-        self._rmb_down: bool = False
-        self._seg_points: list[QPointF] = []  # aktuelle Polyline in Bildkoordinaten
-        self._overlay_color = QColor(255, 0, 0)
+        self._draw_active: bool = False
+
+        # Initial status of the segmentation:
+        self._seg_points: list[QPointF] = [] # No segmentation set
+        self._overlay_color = QColor(255, 0, 0) # Red color for visualization
         self._overlay_width = 1
 
-        self._points: list[QPointF] = []
-        self._points_color = QColor(0, 0, 255)
+        # Initial status of points drawn:
+        self._points: list[QPointF] = [] # No drawn points yet
+        self._points_color = QColor(0, 0, 255) # blue color visualization
         self._points_radius = 2
 
-        self._del_active: bool = False
+        # Initial status of delete activity
+        self._del_active: bool = False # Initially not set on delete structure status
         self._del_start_img: QPointF | None = None
         self._del_cur_img: QPointF | None = None
-        # Optics of the delet-Rect
+        # Visual style of the delet-Rect
         self._rect_pen = QPen(QColor(0, 255, 0), 1, Qt.PenStyle.DashLine)
         self._rect_brush = QBrush(QColor(0, 255, 0, 40))
 
-        self._edit_active: bool = False
+        # Initial status of the edit segmentation activity
+        self._edit_active: bool = False # Initially not set on edit segmentation activity
         self._edit_last_img: QPointF | None = None
 
         # Zooming
-        self._zoom: float = 1.0
-        self._center: QPointF | None = None  # Bildkoordinaten des View-Zentrum
+        self._zoom: float = 1.0 # Standard: Show at 100%
+        self._center: QPointF | None = None
 
-    # ------ Zoom Function ------
+    # Mouse events - different actions according to set Status
+    def mousePressEvent(self, e):
+        # If no image is loaded yet, nothing will happen!
+
+        # If the mouse status is on DRAW_PTS, image is existing, and left mouse was clicked:
+        if self._status == MouseStatus.DRAW_PTS and self._pixmap and e.button() == Qt.MouseButton.LeftButton:
+            img_pt = self._widget_to_image(e.position()) # Converts widget coordinates of the click to image coordinates
+            if img_pt is not None:
+                self.pointAdded.emit(img_pt.x(), img_pt.y())  # fires the signal pointAdded with the img_pt so that the controller can
+                # take these Coordinates and further process them
+                e.accept() # Marks this event as completed and closes the method
+                return
+
+        # If the mouse status is on DRAW_SEG:
+        if self._status == MouseStatus.DRAW_SEG and self._pixmap and e.button() == Qt.MouseButton.LeftButton:
+            img_pt = self._widget_to_image(e.position())
+            if img_pt is not None:
+                self._draw_active = True # Set drawing mode activated flag to true
+                self.segDrawStart.emit(img_pt.x(), img_pt.y()) # Fire the start coordinates of the segmentation
+                e.accept()
+                return
+
+        # If the mouse status is on DEL_STR:
+        if self._status == MouseStatus.DEL_STR and self._pixmap and e.button() == Qt.MouseButton.LeftButton:
+            img_pt = self._widget_to_image(e.position(), allow_outside=True) # Allows starting outside the image.
+            if img_pt is not None:
+                self._del_active = True # Set delete mode activated flag to true
+                self._del_start_img = img_pt # Corner 1 of the delete rectangle
+                self._del_cur_img = img_pt # Corner 2, is updated continually as long as the mouse is pressed and the rectangle is drawn
+                self.update() # Triggers a repaint - so that the delete rectangle is visualized live
+                e.accept()
+                return
+
+        # If the mouse status is on EDIT_SEG:
+        if self._status == MouseStatus.EDIT_SEG and self._pixmap and e.button() == Qt.MouseButton.LeftButton:
+            img_pt = self._widget_to_image(e.position()) # The coordinates where the segmentation line is "grabbed"
+            if img_pt is not None:
+                self._edit_active = True # Set edit segmentation mode flag to true
+                self._edit_last_img = img_pt # Remember the last clicked image coordinate (starting point)
+                self.segEditStart.emit(img_pt.x(), img_pt.y()) # Fire signal that the edit begins on this specific coordinate
+                e.accept()
+                return
+
+        super().mousePressEvent(e) # When none of the conditions above is true: Standard behavior from class e (Mouse events)
+
+    def mouseMoveEvent(self, e):
+        if self._status == MouseStatus.DRAW_SEG and self._pixmap and self._draw_active and Qt.MouseButton.LeftButton:
+            img_pt = self._widget_to_image(e.position())
+            if img_pt is not None:
+                self.segDrawMove.emit(img_pt.x(), img_pt.y()) # If the position lies in the image, the live signal segDrawMove is emitted and
+                # collected by the controller
+                e.accept()
+                return
+
+        if self._status == MouseStatus.DEL_STR and self._pixmap and self._del_active and Qt.MouseButton.LeftButton:
+            img_pt = self._widget_to_image(e.position(), allow_outside=True)
+            if img_pt is not None:
+                self._del_cur_img = img_pt
+                self.update() # live updating position and image visualization of the delete rectangle
+                e.accept()
+                return
+
+        if self._status == MouseStatus.EDIT_SEG and self._pixmap and self._edit_active and Qt.MouseButton.LeftButton:
+            img_pt = self._widget_to_image(e.position())
+            if img_pt is not None:
+                self._edit_last_img = img_pt
+                self.segEditMove.emit(img_pt.x(), img_pt.y()) # Live edit move signal of the live coordinate of the mouse
+                e.accept()
+                return
+
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self._status == MouseStatus.DRAW_SEG and self._draw_active and Qt.MouseButton.LeftButton:
+            self._draw_active = False # Delete draw segmentation status active flag
+            img_pt = self._widget_to_image(e.position())
+            if img_pt is not None:
+                self.segDrawEnd.emit(img_pt.x(), img_pt.y())
+            e.accept()
+            return
+
+        if self._status == MouseStatus.DEL_STR and self._del_active and e.button() == Qt.MouseButton.LeftButton:
+            self._del_active = False # Deactivate delete status active flag
+            if self._del_start_img is not None and self._del_cur_img is not None:
+                x1, y1 = self._del_start_img.x(), self._del_start_img.y()
+                x2, y2 = self._del_cur_img.x(), self._del_cur_img.y()
+                self.deleteRect.emit(x1, y1, x2, y2) # fire the signal with the rectangle coordinates to the controller
+            self._del_start_img = None # Reset the delete rectangle coordinates
+            self._del_cur_img = None
+            self.update() # Update and repaint (the rectangle vanishes)
+            e.accept()
+            return
+
+        if self._status == MouseStatus.EDIT_SEG and self._edit_active and Qt.MouseButton.LeftButton:
+            self._edit_active = False # Deactivat edit segmentation status active flag
+            if self._edit_last_img is not None:
+                self.segEditEnd.emit(self._edit_last_img.x(), self._edit_last_img.y())
+            self._edit_last_img = None
+            e.accept()
+            return
+
+        super().mouseReleaseEvent(e)
+
+    # Mouse Wheel = Zoom-to-Mouse
+    def wheelEvent(self, e: QWheelEvent):
+        # The Zoom function does not work when no image is loaded
+        if not self._pixmap:
+            return
+        # Initialize view: Zoom = 1, Center = center of the image
+        if self._center is None:
+            self._reset_view()
+
+        # 1 "tick" with the mousewheel = 120%
+        steps = e.angleDelta().y() / 120.0
+        if steps == 0:
+            return
+        # Exponential zoom, from 0.1 to 40-factor zoom
+        old_scale = self.current_scale()
+        factor = 1.2 ** steps
+        new_zoom = max(0.1, min(self._zoom * factor, 40.0))
+        # Get the widget coordinates of the cursor position and transform them to image coordinates.
+        img_pt = self._widget_to_image(e.position())
+        self._zoom = new_zoom # Set the new zoom factor
+
+        # adjust the center so that when zooming in / out, it is zoomed to the cursor position
+        if img_pt is not None:
+            s = self.current_scale()
+            W, H = float(self.width()), float(self.height())
+            xw, yw = float(e.position().x()), float(e.position().y())
+
+            # Widget-Coordinate = ImageCenter + (Image - Center) * Scale
+            # Solve to Center so that img_pt stays  on yw, xw and set these as the new center
+            cx = img_pt.x() - (xw - W / 2.0) / s
+            cy = img_pt.y() - (yw - H / 2.0) / s
+            self._center = QPointF(cx, cy)
+            self._clamp_center() # Fix the zoom center coordinates
+
+        self.update()
+
+    # Paint
+    def paintEvent(self, e):
+        # Show the Drag&Drop-Image-Placeholder text
+        if self._pixmap is None:
+            super().paintEvent(e)
+            return
+        # First initialization: Show center + standard zoom of 100%
+        if self._center is None:
+            self._reset_view()
+
+        p = QPainter(self) # Start painting into the widget area
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True) # smooth scaling
+
+        # Zoom function:
+        s = self.current_scale() # The current scale of the image
+        iw, ih = self._pixmap.width(), self._pixmap.height()
+        W, H = self.width(), self.height()
+        x = (W / 2.0) - self._center.x() * s
+        y = (H / 2.0) - self._center.y() * s
+        p.drawPixmap(int(x), int(y), int(iw * s), int(ih * s), self._pixmap)
+
+        # Overlays:
+        # each overlay-coordinate is converted into widget coordinates using _image_to_widget and then drawn without further transformation.
+        # s is the actual image scaling, basd on the Aspect fit.
+        # The base scaling of the image is base = min(W/iw, H/ih) so that the image maximally fits the widget window.
+        # Then we have our own zoom factor: self._zoom --> s = base * self._zoom.
+        # Center (cx, cy) is the image point that is supposed to lie in the center of the widget.
+        # That means when center changes (e.g. through zoom), then the image area covered also changes.
+        # Formulas:
+        #   xw = W/2 + (xi - cx) * s
+        #   yw = H/2 + (yi - cy) * s
+        # In this way, all overlays are "pixel-fixed":
+        # No matter how the zoom is, the thickness of the segmentation line and the radius of the drawn points always stay the same.
+        # This is done by taking the image segmentation coordinates, and depending on zoom and scale calculating the widget points, and painting them.
+        # Hence, paintEvent uses the Forward-functionality (image to widget coordinates), while wheel-event uses backwards-functionality (see method)
+        # 1) Draw the segmentation line
+        if len(self._seg_points) >= 0:
+            pen = QPen(self._overlay_color, self._overlay_width)
+            pen.setCosmetic(True)  # no matter the zoom, the line always has the same thickness
+            p.setPen(pen)
+            last = None
+            for pt_img in self._seg_points:
+                wpt = self._image_to_widget(pt_img)
+                if last is not None:
+                    p.drawLine(last, wpt)
+                last = wpt
+
+        # 2) Draw the points
+        if self._points:
+            pen = QPen(self._points_color, 1)
+            pen.setCosmetic(True) # The points will always have the same radius
+            p.setPen(pen)
+            p.setBrush(QBrush(self._points_color))
+            r = self._points_radius
+            for pt_img in self._points:
+                wpt = self._image_to_widget(pt_img)
+                p.drawEllipse(wpt, r, r)
+
+        # 3) Delete Rectangle activity
+        if self._del_active and self._del_start_img is not None and self._del_cur_img is not None:
+            a = self._image_to_widget(self._del_start_img)
+            b = self._image_to_widget(self._del_cur_img)
+            rect = QRectF(a, b).normalized()
+            pen = self._rect_pen
+            pen.setCosmetic(True)
+            p.setPen(pen)
+            p.setBrush(self._rect_brush)
+            p.drawRect(rect)
+
+        p.end()
+
+    # Helper functions for Zoom functionality
     def current_scale(self) -> float:
+        # Returns the current zoom
         if not self._pixmap or self.width() <= 0 or self.height() <= 0:
             return 1.0
         iw, ih = self._pixmap.width(), self._pixmap.height()
         base = min(self.width() / iw, self.height() / ih)
         return base * self._zoom
 
-    # Praktisch für Controller: Bildschirm-Pixel -> Bild-Pixel
-    def screen_to_image_dist(self, d_screen: float) -> float:
-        return d_screen / self.current_scale()
+    def _image_to_widget(self, pt_img: QPointF) -> QPointF:
+        # Forward-coordinate transformation (see explanation in paint-event)
+        s = self.current_scale()
+        W, H = float(self.width()), float(self.height())
+        cx, cy = float(self._center.x()), float(self._center.y())
+        xw = W / 2.0 + (pt_img.x() - cx) * s
+        yw = H / 2.0 + (pt_img.y() - cy) * s
+        return QPointF(xw, yw)
 
-    # Beim Laden/Drop: View zurücksetzen
+    def _widget_to_image(self, posf, *, allow_outside: bool = False) -> QPointF | None:
+        # backward-coordinate transformation (see explanation in paint-event)
+        if not self._pixmap:
+            return None
+        s = self.current_scale()
+        W, H = float(self.width()), float(self.height())
+        cx, cy = float(self._center.x()), float(self._center.y())
+        xi = cx + (float(posf.x()) - W / 2.0) / s
+        yi = cy + (float(posf.y()) - H / 2.0) / s
+        # Begrenzen auf Bild
+        if allow_outside:
+            xi = max(0.0, min(xi, self._pixmap.width() - 1.0))
+            yi = max(0.0, min(yi, self._pixmap.height() - 1.0))
+            return QPointF(xi, yi)
+        if 0.0 <= xi < self._pixmap.width() and 0.0 <= yi < self._pixmap.height():
+            return QPointF(xi, yi)
+        return None
+
+    def _clamp_center(self):
+        # Fixes the center position so that during zooming (especially zooming out) the cursor does
+        # not go out of the window
+        if not self._pixmap or self._center is None:
+            return
+        iw, ih = self._pixmap.width(), self._pixmap.height()
+        s = self.current_scale()
+        half_w_img = self.width() / (2.0 * s)
+        half_h_img = self.height() / (2.0 * s)
+
+        # Falls View größer als Bild -> Mittelpunkt setzen
+        if half_w_img >= iw / 2.0:
+            cx_min = cx_max = iw / 2.0
+        else:
+            cx_min, cx_max = half_w_img, iw - half_w_img
+
+        if half_h_img >= ih / 2.0:
+            cy_min = cy_max = ih / 2.0
+        else:
+            cy_min, cy_max = half_h_img, ih - half_h_img
+
+        cx = min(max(self._center.x(), cx_min), cx_max)
+        cy = min(max(self._center.y(), cy_min), cy_max)
+        self._center = QPointF(cx, cy)
+
+    # Resets the view when a new image is dropped.
     def _reset_view(self):
         if not self._pixmap:
             return
@@ -84,13 +346,10 @@ class ImageDropArea(QLabel):
         iw, ih = self._pixmap.width(), self._pixmap.height()
         self._center = QPointF(iw / 2.0, ih / 2.0)
 
-    # ---- Drag & Drop ----
+    # Helper functions for Drag&Drop
     def dragEnterEvent(self, event):
-        print("[DND] dragEnter", event.mimeData().formats())
-        if self._has_image_url(event):
-            print("[DND] accept")
+        if self._has_image_url(event): # if
             event.acceptProposedAction()
-            self.setProperty("dragActive", True)
             self.style().unpolish(self)
             self.style().polish(self)
         else:
@@ -113,7 +372,7 @@ class ImageDropArea(QLabel):
             event.ignore(); return
 
         path = url.toLocalFile()
-        if Path(path).suffix.lower() not in ALLOWED_EXTS:
+        if Path(path).suffix.lower() not in ALLOWED:
             event.ignore(); return
 
         pm = QPixmap(path)
@@ -127,8 +386,8 @@ class ImageDropArea(QLabel):
         self._reset_view()
         self.setProperty("dragActive", False)
 
-        self.setPixmap(QPixmap())  # <<< wichtig: internes QLabel-Pixmap leeren
-        self.imageDropped.emit(path)  # <--- zurück!
+        self.setPixmap(QPixmap())
+        self.imageDropped.emit(path)
         self.setText("")
         self.update()
 
@@ -149,7 +408,7 @@ class ImageDropArea(QLabel):
         self._seg_points.clear()
         self._points.clear()
         self._reset_view()
-        self.setPixmap(QPixmap())  # <<< wichtig
+        self.setPixmap(QPixmap())
         self.setText("")
         self.update()
         return True
@@ -185,276 +444,20 @@ class ImageDropArea(QLabel):
         self._points.clear()
         self.update()
 
-    # ---- Helpers ----
     def _has_image_url(self, event) -> bool:
         md = event.mimeData()
         if not md.hasUrls():
             return False
         for u in md.urls():
-            if u.isLocalFile() and Path(u.toLocalFile()).suffix.lower() in ALLOWED_EXTS:
+            if u.isLocalFile() and Path(u.toLocalFile()).suffix.lower() in ALLOWED:
                 return True
         return False
 
     def show_qimage(self, qimg: QImage):
-        # Hier WIRKLICH das Bild übernehmen – aber Zoom/Center NICHT resetten,
-        # sonst "springen" Slider/Reset/Zoom.
         if qimg.isNull():
             return
         self._pixmap = QPixmap.fromImage(qimg)
         if self._center is None:
-            self._reset_view()  # nur beim allerersten Bild
+            self._reset_view()
         self.setText("")
         self.update()
-
-    # Mouse Actions
-    def mousePressEvent(self, e):
-        # Roh-Log, damit wir sehen, ob Events ankommen:
-        # (Achtung: kommt auch bei IDLE)
-        # print("[DropArea] mousePress", e.button(), "status=", self._status)
-        if self._status == MouseStatus.DRAW_PTS and self._pixmap and e.button() == Qt.MouseButton.LeftButton:
-            img_pt = self._widget_to_image(e.position())
-            if img_pt is not None:
-                self.pointAdded.emit(img_pt.x(), img_pt.y())  # <-- neu
-                e.accept()
-                return
-
-        if self._status == MouseStatus.DRAW_SEG and self._pixmap and e.button() in DRAW_BUTTONS:
-            img_pt = self._widget_to_image(e.position())
-            print("[DropArea] PRESS ok, img_pt=", img_pt)  # DEBUG
-            if img_pt is not None:
-                self._rmb_down = True
-                self.segDrawStart.emit(img_pt.x(), img_pt.y())
-                e.accept(); return
-
-        if self._status == MouseStatus.DEL_STR and self._pixmap and e.button() == Qt.MouseButton.LeftButton:
-            print(f"[{self.objectName()}] DEL_PRESS at widget=({e.position().x():.1f},{e.position().y():.1f})")
-            img_pt = self._widget_to_image(e.position(), allow_outside=True)
-            print(
-                f"[{self.objectName()}]   -> img_pt={None if img_pt is None else (round(img_pt.x(), 1), round(img_pt.y(), 1))}")
-            if img_pt is not None:
-                self._del_active = True
-                self._del_start_img = img_pt
-                self._del_cur_img = img_pt
-                self.update()
-                e.accept()
-                return
-
-        # --- EDIT_SEG: linken Button drücken um auf Linie "einzuhaken"
-        if self._status == MouseStatus.EDIT_SEG and self._pixmap and e.button() == Qt.MouseButton.LeftButton:
-            img_pt = self._widget_to_image(e.position())
-            if img_pt is not None:
-                self._edit_active = True
-                self._edit_last_img = img_pt
-                self.segEditStart.emit(img_pt.x(), img_pt.y())
-                e.accept()
-                return
-
-        super().mousePressEvent(e)
-
-    def mouseMoveEvent(self, e):
-        if (self._status == MouseStatus.DRAW_SEG and self._pixmap and self._rmb_down and
-                (e.buttons() & Qt.MouseButton.LeftButton or e.buttons() & Qt.MouseButton.RightButton)):
-            img_pt = self._widget_to_image(e.position())
-            if img_pt is not None:
-                # DEBUG:
-                # print("[DropArea] move", img_pt.x(), img_pt.y())
-                self.segDrawMove.emit(img_pt.x(), img_pt.y())
-                e.accept()
-                return
-
-        if self._status == MouseStatus.DEL_STR and self._pixmap and self._del_active and (
-                e.buttons() & Qt.MouseButton.LeftButton):
-            img_pt = self._widget_to_image(e.position(), allow_outside=True)
-            if img_pt is not None:
-                self._del_cur_img = img_pt
-                print(f"[{self.objectName()}] DEL_MOVE img=({img_pt.x():.1f},{img_pt.y():.1f})")  # optional
-                self.update()
-                e.accept()
-                return
-
-        if self._status == MouseStatus.EDIT_SEG and self._pixmap and self._edit_active and (
-                e.buttons() & Qt.MouseButton.LeftButton):
-            img_pt = self._widget_to_image(e.position())
-            if img_pt is not None:
-                self._edit_last_img = img_pt
-                self.segEditMove.emit(img_pt.x(), img_pt.y())
-                e.accept()
-                return
-
-        super().mouseMoveEvent(e)
-
-    def mouseReleaseEvent(self, e):
-        if self._status == MouseStatus.DRAW_SEG and self._rmb_down and e.button() in DRAW_BUTTONS:
-            self._rmb_down = False
-            img_pt = self._widget_to_image(e.position())
-            print("[DropArea] release img_pt=", img_pt)  # DEBUG
-            if img_pt is not None:
-                self.segDrawEnd.emit(img_pt.x(), img_pt.y())
-            e.accept()
-            return
-
-        if self._status == MouseStatus.DEL_STR and self._del_active and e.button() == Qt.MouseButton.LeftButton:
-            print(f"[{self.objectName()}] DEL_RELEASE")
-            self._del_active = False
-            if self._del_start_img is not None and self._del_cur_img is not None:
-                x1, y1 = self._del_start_img.x(), self._del_start_img.y()
-                x2, y2 = self._del_cur_img.x(), self._del_cur_img.y()
-                print(f"[{self.objectName()}]   EMIT deleteRect ({x1:.1f},{y1:.1f})-({x2:.1f},{y2:.1f})")
-                self.deleteRect.emit(x1, y1, x2, y2)
-            self._del_start_img = None
-            self._del_cur_img = None
-            self.update()
-            e.accept()
-            return
-
-        if self._status == MouseStatus.EDIT_SEG and self._edit_active and e.button() == Qt.MouseButton.LeftButton:
-            self._edit_active = False
-            if self._edit_last_img is not None:
-                self.segEditEnd.emit(self._edit_last_img.x(), self._edit_last_img.y())
-            self._edit_last_img = None
-            e.accept()
-            return
-
-        super().mouseReleaseEvent(e)
-
-    # Mouse Wheel = Zoom-to-Mouse
-    def wheelEvent(self, e: QWheelEvent):
-        if not self._pixmap:
-            return
-        if self._center is None:
-            self._reset_view()
-
-        # 1 "tick" = 120
-        steps = e.angleDelta().y() / 120.0
-        if steps == 0:
-            return
-
-        old_scale = self.current_scale()
-        factor = 1.2 ** steps
-        new_zoom = max(0.1, min(self._zoom * factor, 40.0))  # clamp
-
-        # Bildpunkt unter Cursor vor dem Zoom:
-        img_pt = self._widget_to_image(e.position())
-        self._zoom = new_zoom
-
-        # Zentrum anpassen, sodass img_pt unter Cursor bleibt:
-        if img_pt is not None:
-            s = self.current_scale()
-            W, H = float(self.width()), float(self.height())
-            xw, yw = float(e.position().x()), float(e.position().y())
-            cx = img_pt.x() - (xw - W / 2.0) / s
-            cy = img_pt.y() - (yw - H / 2.0) / s
-            self._center = QPointF(cx, cy)
-            self._clamp_center()
-
-        self.update()
-
-    # Paint: Bild + Overlays in Widgetkoordinaten (pixelfest)
-    def paintEvent(self, e):
-        if self._pixmap is None:
-            super().paintEvent(e)
-            return
-
-        if self._center is None:
-            self._reset_view()
-
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        s = self.current_scale()
-        iw, ih = self._pixmap.width(), self._pixmap.height()
-        W, H = self.width(), self.height()
-
-        x = (W / 2.0) - self._center.x() * s
-        y = (H / 2.0) - self._center.y() * s
-        p.drawPixmap(int(x), int(y), int(iw * s), int(ih * s), self._pixmap)
-
-        # Overlays: immer in Widget-Pixeln
-        # 1) Seg-Linie
-        if len(self._seg_points) >= 2:
-            pen = QPen(self._overlay_color, self._overlay_width)
-            pen.setCosmetic(True)  # LINIE BLEIBT GLEICH DICK
-            p.setPen(pen)
-            last = None
-            for pt_img in self._seg_points:
-                wpt = self._image_to_widget(pt_img)
-                if last is not None:
-                    p.drawLine(last, wpt)
-                last = wpt
-
-        # 2) Punkte
-        if self._points:
-            pen = QPen(self._points_color, 1)
-            pen.setCosmetic(True)
-            p.setPen(pen)
-            p.setBrush(QBrush(self._points_color))
-            r = self._points_radius  # Radius in Screen-Pixeln
-            for pt_img in self._points:
-                wpt = self._image_to_widget(pt_img)
-                p.drawEllipse(wpt, r, r)
-
-        # 3) Delete-Rect (falls active) – wie gehabt ...
-        if self._del_active and self._del_start_img is not None and self._del_cur_img is not None:
-            a = self._image_to_widget(self._del_start_img)
-            b = self._image_to_widget(self._del_cur_img)
-            # a/b sind QPointF in Widget-Koordinaten; baue normiertes QRectF
-            rect = QRectF(a, b).normalized()
-
-            pen = self._rect_pen
-            pen.setCosmetic(True)  # gleichbleibende Linienstärke
-            p.setPen(pen)
-            p.setBrush(self._rect_brush)
-            p.drawRect(rect)
-
-        p.end()
-
-    # Helper Functions for Zooming function
-    # -------------------------------------------------
-    # Mapping: Bild <-> Widget MIT center/zoom
-    def _image_to_widget(self, pt_img: QPointF) -> QPointF:
-        s = self.current_scale()
-        W, H = float(self.width()), float(self.height())
-        cx, cy = float(self._center.x()), float(self._center.y())
-        xw = W / 2.0 + (pt_img.x() - cx) * s
-        yw = H / 2.0 + (pt_img.y() - cy) * s
-        return QPointF(xw, yw)
-
-    def _widget_to_image(self, posf, *, allow_outside: bool = False) -> QPointF | None:
-        if not self._pixmap:
-            return None
-        s = self.current_scale()
-        W, H = float(self.width()), float(self.height())
-        cx, cy = float(self._center.x()), float(self._center.y())
-        xi = cx + (float(posf.x()) - W / 2.0) / s
-        yi = cy + (float(posf.y()) - H / 2.0) / s
-        # Begrenzen auf Bild
-        if allow_outside:
-            xi = max(0.0, min(xi, self._pixmap.width() - 1.0))
-            yi = max(0.0, min(yi, self._pixmap.height() - 1.0))
-            return QPointF(xi, yi)
-        if 0.0 <= xi < self._pixmap.width() and 0.0 <= yi < self._pixmap.height():
-            return QPointF(xi, yi)
-        return None
-
-    def _clamp_center(self):
-        """Sorge dafür, dass beim Zoomen nicht komplett 'ins Leere' gepannt wird."""
-        if not self._pixmap or self._center is None:
-            return
-        iw, ih = self._pixmap.width(), self._pixmap.height()
-        s = self.current_scale()
-        half_w_img = self.width() / (2.0 * s)
-        half_h_img = self.height() / (2.0 * s)
-
-        # Falls View größer als Bild -> Mittelpunkt setzen
-        if half_w_img >= iw / 2.0:
-            cx_min = cx_max = iw / 2.0
-        else:
-            cx_min, cx_max = half_w_img, iw - half_w_img
-
-        if half_h_img >= ih / 2.0:
-            cy_min = cy_max = ih / 2.0
-        else:
-            cy_min, cy_max = half_h_img, ih - half_h_img
-
-        cx = min(max(self._center.x(), cx_min), cx_max)
-        cy = min(max(self._center.y(), cy_min), cy_max)
-        self._center = QPointF(cx, cy)

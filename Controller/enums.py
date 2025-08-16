@@ -1,5 +1,6 @@
 from enum import Enum, auto
 
+# Setting the status of the mouse
 class MouseStatus(Enum):
     IDLE = auto()
     DRAW_SEG = auto()

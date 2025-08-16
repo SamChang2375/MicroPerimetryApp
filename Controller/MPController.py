@@ -1,4 +1,3 @@
-# App/controller.py
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Optional
@@ -9,12 +8,10 @@ from Controller.enums import MouseStatus
 import math
 from Model.annotations import PanelAnnotations, AnnotationsBundle
 from Model.grid_compute import GridComputer, GridResult
-from pprint import pformat
 
-# --- Model ---
 @dataclass
 class ImageState:
-    path: Optional[str] = None  # <-- Falls das ein Tippfehler ist: sollte 'str | None' sein!
+    path: Optional[str] = None
     original: Optional[QImage] = None
     contrast: int = 150
     brightness: int = 0
@@ -192,9 +189,17 @@ class ImageController(QObject):
         v.dropMicro.pointAdded.connect(lambda x, y: self._point_added("micro", x, y))
         v.dropMicro.deleteRect.connect(lambda x1, y1, x2, y2: self._delete_rect("micro", x1, y1, x2, y2))
 
-        btn = v.bottomRightPanel.toolbarButtons.get("Compute Grids")
+        btn = v.bottomRightPanel.toolbarButtons.get("Comp Grids AppSeg")
         if btn:
             btn.clicked.connect(self._on_compute_grids_clicked)
+
+        # ------ FOR COMPUTE (bottom right) ------
+        if (btn := v.bottomRightPanel.toolbarButtons.get("Comp Grids AppSeg")):
+            btn.clicked.connect(lambda: self._on_compute_grids_clicked(mode="appseg"))
+        if (btn := v.bottomRightPanel.toolbarButtons.get("Comp Grids PreSeg")):
+            btn.clicked.connect(lambda: self._on_compute_grids_clicked(mode="preseg"))
+        if (btn := v.bottomRightPanel.toolbarButtons.get("Reset")):
+            btn.clicked.connect(self._on_compute_reset_clicked)
 
 
     # Edit Segmentation Functionality
@@ -422,15 +427,17 @@ class ImageController(QObject):
         v = self.view
         return {"highres": v.dropHighRes, "sd": v.dropSD, "micro": v.dropMicro}.get(panel_id)
 
-    def _on_compute_grids_clicked(self):
-        print("[Compute] Button pressed")
-        self.dump_all_lists()  # <- komplette Listen in die Konsole
-
+    def _on_compute_grids_clicked(self, mode: str):
+        # 1) Einsammeln
         bundle = AnnotationsBundle(
             highres=self._snapshot_panel("highres"),
             sd=self._snapshot_panel("sd"),
             micro=PanelAnnotations(seg=[], points=self.states["micro"].pts_points.copy())
         )
+        # (Optional) Validierung je nach mode:
+        # if mode == "appseg" and (not bundle.highres.seg or not bundle.sd.seg): ...
+
+        # 2) Task starten (Du könntest mode in GridComputer übergeben, falls nötig)
         task = _ComputeTask(bundle, self.compute_sig)
         self.pool.start(task)
 
@@ -504,29 +511,16 @@ class ImageController(QObject):
             points=st.pts_points.copy()
         )
 
-    def _on_compute_grids_clicked(self):
-        # 1) Einsammeln
-        bundle = AnnotationsBundle(
-            highres=self._snapshot_panel("highres"),
-            sd=self._snapshot_panel("sd"),
-            micro=PanelAnnotations(seg=[], points=self.states["micro"].pts_points.copy())
-        )
-        # 2) (Optional) Validieren
-        # z.B. sicherstellen, dass hr/sd Seg vorhanden sind:
-        # if not bundle.highres.seg or not bundle.sd.seg:
-        #     print("[Compute] missing segmentation"); return
-
-        # 3) Im ThreadPool rechnen (UI bleibt frei)
-        task = _ComputeTask(bundle, self.compute_sig)
-        self.pool.start(task)
-
     def _on_compute_finished(self, res: GridResult):
         # Ergebnis entgegennehmen und an die View geben
         # (aktuell nur Debug-Ausgabe; hier könntest du unten rechts etwas rendern)
         print("[Compute] Done:", res.message, res.debug)
         # Beispiel: Statuszeile, Dialog, oder Inhalte im bottomRightPanel aktualisieren
 
-    from pprint import pformat
+    def _on_compute_reset_clicked(self):
+        # Beispiel: Statuszeile unten rechts leeren
+        if hasattr(self.view, "computeStatus"):
+            self.view.computeStatus.clear()
 
     def _round_pts(self, pts, nd=2):
         return [(round(x, nd), round(y, nd)) for (x, y) in pts]
