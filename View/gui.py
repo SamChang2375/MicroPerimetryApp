@@ -34,7 +34,7 @@ class MicroPerimetryGUI(QWidget):
         # create four Panels --> Implemented in the Panel-Class
         self.topLeftPanel = Panel("High Res OCT Image")
         self.bottomLeftPanel = Panel("SD OCT Image")
-        self.topRightPanel = Panel("MicroPerimetry Imabge")
+        self.topRightPanel = Panel("MicroPerimetry Image")
         self.bottomRightPanel = Panel("Compute Area")
 
         # Put the panels together to the Layout
@@ -51,8 +51,8 @@ class MicroPerimetryGUI(QWidget):
                                             QSizePolicy.Policy.Fixed)
         # Set the startup panel sizes
         QTimer.singleShot(0, lambda: self.rightSplitter.setSizes([
-            max(self.rightSplitter.size().height() - MAX_H, 0),  # oben
-            MAX_H  # unten
+            max(self.rightSplitter.size().height() - MAX_H, 0),
+            MAX_H
         ]))
 
         # Putting it altogether
@@ -93,14 +93,14 @@ class MicroPerimetryGUI(QWidget):
         self.topLeftPanel.toolbarButtons["Draw Pts"].setToolTip(
             "Draw points by left-clicking on the desired spot where to \n"
             "draw the point. It is necessary to spread out the points over the whole image \n"
-            "so that the matching algorithm for grid computung works best. \n"
+            "so that the matching algorithm for grid computing works best. \n"
             "Mark at least 4 points, optimal are 7 points. Use the arterial structures \n"
             "to find corresponding points in each of the three image. \n"
             "Each image must have the same number of drawn points!")
         self.topLeftPanel.toolbarButtons["Edit Seg"].setToolTip(
             "Edit the segmentation line by left-click-holding the mouse, \n"
             "thus 'grabbing' the desired Section of the Segmentation line to edit. \n"
-            "this funcionality allows one to smoothen out the segmentation line and \n"
+            "this functionality allows one to smoothen out the segmentation line and \n"
             "correct missegmented parts.")
         self.topLeftPanel.toolbarButtons["Del Str"].setToolTip(
             "Draw a Rectangle by left-click-holding on the image, dragging and releasing \n"
@@ -135,14 +135,14 @@ class MicroPerimetryGUI(QWidget):
         self.bottomLeftPanel.toolbarButtons["Draw Pts"].setToolTip(
             "Draw points by left-clicking on the desired spot where to \n"
             "draw the point. It is necessary to spread out the points over the whole image \n"
-            "so that the matching algorithm for grid computung works best. \n"
+            "so that the matching algorithm for grid computing works best. \n"
             "Mark at least 4 points, optimal are 7 points. Use the arterial structures \n"
             "to find corresponding points in each of the three image. \n"
             "Each image must have the same number of drawn points!")
         self.bottomLeftPanel.toolbarButtons["Edit Seg"].setToolTip(
             "Edit the segmentation line by left-click-holding the mouse, \n"
             "thus 'grabbing' the desired Section of the Segmentation line to edit. \n"
-            "this funcionality allows one to smoothen out the segmentation line and \n"
+            "this functionality allows one to smoothen out the segmentation line and \n"
             "correct missegmented parts.")
         self.bottomLeftPanel.toolbarButtons["Del Str"].setToolTip(
             "Draw a Rectangle by left-click-holding on the image, dragging and releasing \n"
@@ -172,7 +172,7 @@ class MicroPerimetryGUI(QWidget):
         self.topRightPanel.toolbarButtons["Draw Pts"].setToolTip(
             "Draw points by left-clicking on the desired spot where to \n"
             "draw the point. It is necessary to spread out the points over the whole image \n"
-            "so that the matching algorithm for grid computung works best. \n"
+            "so that the matching algorithm for grid computing works best. \n"
             "Mark at least 4 points, optimal are 7 points. Use the arterial structures \n"
             "to find corresponding points in each of the three image. \n"
             "Each image must have the same number of drawn points!")
