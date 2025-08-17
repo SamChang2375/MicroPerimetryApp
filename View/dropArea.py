@@ -456,8 +456,18 @@ class ImageDropArea(QLabel):
     def show_qimage(self, qimg: QImage):
         if qimg.isNull():
             return
-        self._pixmap = QPixmap.fromImage(qimg)
-        if self._center is None:
+
+        # alte Größe merken (falls vorher schon ein Bild vorhanden war)
+        old_size = self._pixmap.size() if self._pixmap is not None else None
+
+        pm = QPixmap.fromImage(qimg)
+        size_changed = (old_size is None) or (old_size != pm.size())
+
+        self._pixmap = pm
+
+        if self._center is None or size_changed:
             self._reset_view()
+
         self.setText("")
         self.update()
+

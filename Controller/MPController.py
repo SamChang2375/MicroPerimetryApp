@@ -6,6 +6,7 @@ from PyQt6.QtGui import QImage, QImageReader
 from Controller.enums import MouseStatus, ComputeMode
 from Model.image_state import ImageState
 from Model.seg_ops import deform_points_gaussian, laplacian_smooth, build_edit_window, nearest_seg_point_index
+from Model.image_ops import apply_contrast_brightness, auto_crop_bars
 
 # Worker infrastructure: Needed because it allows parallel threading parallel to the GUI-Thread by
 # performing calculations in the background.
@@ -332,15 +333,35 @@ class ImageController(QObject):
 
     # Helper functions for image-itself display and editing (via the contrast and brightness sliders)
     def load_image(self, panel_id: str, path: str):
-        # Reads an image with the QImageReader
-        reader = QImageReader(path)
-        reader.setAutoTransform(True)
-        img = reader.read()
-
         st = self.states[panel_id]
         st.path = path
-        st.original = img  # Writes the image into the Model-state of the panel
-        self._schedule(panel_id)  # Gives the job to the scheduler to start Image display
+
+        if panel_id in ("highres", "sd"):
+            # 1) Croppen mit OpenCV
+            qimg_cropped, rgb_np, bbox = auto_crop_bars(path)
+            if qimg_cropped is None:
+                # Fallback: normal laden (sollte selten passieren)
+                reader = QImageReader(path)
+                reader.setAutoTransform(True)
+                img = reader.read()
+                st.original = img
+                st.crop_rect = None
+                st.rgb_np = None
+            else:
+                # 2) zugeschnittenes Bild als Arbeitsbild übernehmen
+                st.original = qimg_cropped
+                st.crop_rect = bbox
+                st.rgb_np = rgb_np
+        else:
+            # Micro-Perimetry: original lassen
+            reader = QImageReader(path)
+            reader.setAutoTransform(True)
+            st.original = reader.read()
+            st.crop_rect = None
+            st.rgb_np = None
+
+        # Ab hier arbeitet die Pipeline (Slider etc.) mit st.original (also dem Crop)
+        self._schedule(panel_id)
 
     def on_contrast(self, panel_id: str, value: int):
         st = self.states[panel_id]
