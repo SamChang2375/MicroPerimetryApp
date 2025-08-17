@@ -35,3 +35,4 @@ def apply_contrast_brightness(qimg: QImage, contrast_percent: int, brightness_pe
     # Zurück nach QImage (copy(), damit der Speicher owned ist)
     qout = QImage(out.data, w, h, w * 4, QImage.Format.Format_RGBA8888).copy()
     return qout
+
