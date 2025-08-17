@@ -7,3 +7,7 @@ class MouseStatus(Enum):
     DRAW_PTS = auto()
     DEL_STR = auto()
     EDIT_SEG = auto()
+
+class ComputeMode(Enum):
+    PRE_SEG = auto()
+    APP_SEG = auto()

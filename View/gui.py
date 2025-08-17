@@ -197,8 +197,8 @@ class MicroPerimetryGUI(QWidget):
 
         # Compute Grid Buttons
         self.bottomRightPanel.add_toolbar_buttons({
-            "Comp Grids AppSeg": self._btn("Compute Grids AppSeg"),
-            "Comp Grids PreSeg": self._btn("Compute Grids PreSeg"),
+            "Comp Grids AppSeg": self._btn("Comp Grids AppSeg"),
+            "Comp Grids PreSeg": self._btn("Comp Grids PreSeg"),
             "Reset": self._btn("Reset")
         })
         # Compute Grid Button tooltips

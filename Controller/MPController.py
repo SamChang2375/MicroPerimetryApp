@@ -3,7 +3,7 @@ from typing import Dict
 from Model.image_ops import apply_contrast_brightness
 from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool, QRunnable, QTimer
 from PyQt6.QtGui import QImage, QImageReader
-from Controller.enums import MouseStatus
+from Controller.enums import MouseStatus, ComputeMode
 from Model.image_state import ImageState
 from Model.seg_ops import deform_points_gaussian, laplacian_smooth, build_edit_window, nearest_seg_point_index
 
@@ -163,6 +163,12 @@ class ImageController(QObject):
 
         v.dropMicro.pointAdded.connect(lambda x, y: self._point_added("micro", x, y))
         v.dropMicro.deleteRect.connect(lambda x1, y1, x2, y2: self._delete_rect("micro", x1, y1, x2, y2))
+
+        # ------ FOR COMPUTE GRIDS -----
+        br = v.bottomRightPanel.toolbarButtons
+        br["Comp Grids AppSeg"].clicked.connect(lambda: self._on_compute_grids_clicked("appseg"))
+        br["Comp Grids PreSeg"].clicked.connect(lambda: self._on_compute_grids_clicked("preseg"))
+        br["Reset"].clicked.connect(self._on_compute_reset_clicked)
 
     # Draw Points Functionality
     def _draw_pts_activate(self, panel_id: str):
@@ -398,3 +404,29 @@ class ImageController(QObject):
         # Maps desired ImageDropArea
         v = self.view
         return {"highres": v.dropHighRes, "sd": v.dropSD, "micro": v.dropMicro}.get(panel_id)
+
+    # Compute Grids Methods
+    def _on_compute_grids_clicked(self, mode: str):
+        # Nur Meldung ausgeben (vorerst)
+        print(f"[UI] Compute Grids clicked -> mode={mode}")
+
+        """
+        Diese Funktion soll jetzt folgenden Algorithmus ausführen:
+        Zunächst sollen alle 3 Imagestates von den 3 Panels in einer eigenen Variable gespeichert werden, 
+        um darauf bequem zugreifen zu können.  
+        - Diese Methode braucht noch einen weiteren Parameter ComputeMode. 
+        Wenn ComputeMode == ComputeMode.PRE_SEG, dann bedeutet dass das schon vorher in der PNG eine Segmentationslinie 
+        einzeichnet wurde. 
+        Das bedeutet: 
+        - Beim high-Res OCT bild und beim SD-OCT Bild müssen wir aus dem Bild heraus die Segmentationsmasken extrahieren. 
+        - Die dabei erstellten Punktelisten werden ersetzt bei den Imagestate Objekte.
+        Wenn ComputeMode == ComputeMode.APP_SEG, dann passiert nichts.
+        Dann müssen wir die Punktelisten der 3 Imagepanels prüfen. 
+        - Wenn eine der Listen weniger als 4 Punkte hat: Fehlermeldung ausgben aus der Ausgabezeile. 
+        - Nehme High-Res OCT und 
+        """
+
+    def _on_compute_reset_clicked(self):
+        print("[UI] Compute Reset clicked")
+        if hasattr(self.view, "computeStatus"):
+            self.view.computeStatus.clear()
