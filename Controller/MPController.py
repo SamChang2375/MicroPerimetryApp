@@ -7,7 +7,7 @@ from Controller.enums import MouseStatus
 from Model.image_state import ImageState
 from Model.seg_ops import deform_points_gaussian, laplacian_smooth, build_edit_window, nearest_seg_point_index
 from Model.image_ops import apply_contrast_brightness, auto_crop_bars
-from Model.compute_grids_ops import qimage_to_rgb_np, extract_segmentation_line, correct_segmentation, ensure_pointlists_ok, correct_HR_SD_order, correct_SD_MP_order, create_homography_matrix, fmt_mat, transform_coordinates, compose
+from Model.compute_grids_ops import qimage_to_rgb_np, extract_segmentation_line, correct_segmentation, correct_HR_SD_order, correct_SD_MP_order, create_homography_matrix, fmt_mat, transform_coordinates, compose
 
 # Worker infrastructure: Needed because it allows parallel threading parallel to the GUI-Thread by
 # performing calculations in the background.
@@ -429,64 +429,95 @@ class ImageController(QObject):
 
     # Compute Grids Methods
     def _on_compute_grids_clicked(self):
-        # Nur Meldung ausgeben (vorerst)
-        print(f"[UI] Compute Grids clicked")
-
         # The stored point lists + segmentation masks
         hr = self.states["highres"]
         sd = self.states["sd"]
         mp = self.states["micro"]
 
+        # Als allererstes prüfen ob überhaupt ein Bild geladen wurde.
+        # Wenn mindestens ein Bild fehlt, dann soll eine Fehlermeldung ausgegeben werden.
+        if hr.original is None:
+            self._set_status_text("Please load an image into the HR OCT Panel!", kind="error")
+            return
+        elif sd.original is None:
+            self._set_status_text("Please load an image into the SD OCT Panel!", kind="error")
+            return
+        elif mp.original is None:
+            self._set_status_text("Please load an image into the Microperimetry Panel!", kind="error")
+            return
+
         # Get the id and check - only pass if the entered value is numeric.
         raw = self.view.computeInput.text().strip()
         if not raw.isdigit():
-            self._set_status_text("Please only enter a numeric-value patient ID!", kind="error")
+            self._set_status_text("Please enter a numeric-value patient ID!", kind="error")
             return
         # Used when creating the XML file name.
         patient_id = int(raw)
 
+        # Wenn alle Bilder geladen wurden:
+        # Prüfe, ob es eine Segmentation gibt:
         target_rgb = (0, 255, 255)  # Cyan
         tol = 10
-        if mode == ComputeMode.PRE_SEG:
-            # --- HighRes ---
-            hr_img = hr.rgb_np if hr.rgb_np is not None else qimage_to_rgb_np(hr.original)
-            hr_pts = extract_segmentation_line(hr_img, target_rgb, tol=tol)
-            if not hr_pts:
-                self._set_status_text("No Pre-segmented HR OCT segmentation line was found!", kind="error")
-                return
+        TOL = 1.0
+        STEP = 1.0
+
+        # Prüfe, ob es eine Prä-Segmentierung für das High Res gibt.
+        hr_img = hr.rgb_np # das gecroppte HR Bild
+        hr_pts = extract_segmentation_line(hr_img, target_rgb, tol=tol)
+        # Prüfe, ob es eine App-Segmentierung für das High Res gibt.
+        hr_fixed = correct_segmentation(hr.seg_points, tol=TOL, auto_close=True, max_step=STEP, min_index_gap=10)
+        if hr_pts:
             hr.seg_points = hr_pts
-
-            # --- SD ---
-            sd_img = sd.rgb_np if sd.rgb_np is not None else qimage_to_rgb_np(sd.original)
-            sd_pts = extract_segmentation_line(sd_img, target_rgb, tol=tol)
-            if not sd_pts:
-                self._set_status_text("No Pre-segmented SD OCT segmentation line was found!", kind="error")
-                return
-            sd.seg_points = sd_pts
-
-        elif mode == ComputeMode.APP_SEG:
-            TOL = 1.0
-            STEP = 1.0
-
-            # High Res
-            if not hr.seg_points:
-                self._set_status_text("No App-Segmented HR OCT segmentation line was found!.", kind="error");
-                return
-            hr_fixed = correct_segmentation(hr.seg_points, tol=TOL, auto_close=True, max_step=STEP)
+        elif (not hr_pts) and hr_fixed:
             hr.seg_points = hr_fixed
-
-            # SD OCT
-            if not sd.seg_points:
-                self._set_status_text("No App-Segmented SD OCT segmentation line was found!", kind="error");
-                return
-            sd_fixed = correct_segmentation(sd.seg_points, tol=TOL, auto_close=True, max_step=STEP)
-            sd.seg_points = sd_fixed
-
-        # Punkte prüfen
-        ok, msg = ensure_pointlists_ok(hr.pts_points, sd.pts_points, min_len=4)
-        if not ok:
-            self._set_status_text(msg, kind="error")
+        else:
+            self._set_status_text("No HR OCT segmentation line was found! Please segment a DRIL line through the controls of the app!", kind = "error")
             return
+
+        # Prüfe, ob es eine Prä-Segmentierung für das SD OCT gibt.
+        sd_img = sd.rgb_np  # das gecroppte SD Bild
+        sd_pts = extract_segmentation_line(sd_img, target_rgb, tol=tol)
+        # Prüfe, ob es eine App-Segmentierung für das High Res gibt.
+        sd_fixed = correct_segmentation(sd.seg_points, tol=TOL, auto_close=True, max_step=STEP, min_index_gap=10)
+        if sd_pts:
+            sd.seg_points = sd_pts
+        elif (not sd_pts) and sd_fixed:
+            sd.seg_points = sd_fixed
+        else:
+            self._set_status_text("No SD OCT segmentation line was found! Please segment a DRIL line through the controls of the app!", kind="error")
+            return
+
+        # --- Visualisierung der finalen Segmentierungen im UI ---
+        drop_hr = self._drop_of("highres")
+        if drop_hr:
+            drop_hr.set_segmentation(hr.seg_points)
+
+        drop_sd = self._drop_of("sd")
+        if drop_sd:
+            drop_sd.set_segmentation(sd.seg_points)
+
+        print("Wir sind hier")
+        # Jetzt müssen wir prüfen, ob in jedem Panel mehr als 4 Punkte gesesetzt wurden
+        if len(hr.pts_points) < 4:
+            self._set_status_text("Set at least 4 matching points in the HR OCT Image!", kind="error")
+            return
+        elif len(sd.pts_points) < 4:
+            self._set_status_text("Set at least 4 matching points in the SD OCT Image!", kind="error")
+            return
+        elif len(mp.pts_points) < 4:
+            self._set_status_text("Set at least 4 matching points in the Microperimetry Image!", kind="error")
+            return
+        # Prüfe, ob die Anzahl der gesetzten Punkte gleich ist.
+        if (len(hr.pts_points) != len(sd.pts_points) or
+            len(sd.pts_points) != len(mp.pts_points) or
+            len(hr.pts_points) != len(mp.pts_points)):
+            self._set_status_text("Please set the same number of matching points in each of the images!", kind="error")
+            return
+
+
+
+
+        """
         # SD so umsortieren, dass Reihenfolge zu HR passt
         hr_new, sd_new = correct_HR_SD_order(hr.pts_points, sd.pts_points)
         hr.pts_points = hr_new
@@ -537,7 +568,7 @@ class ImageController(QObject):
         print(f"H_hr2sd=\n{H_hr2sd}\nH_sd2mp=\n{H_sd2mp}\nH_hr2mp=\n{H_hr2mp}")
         print(f"HR->MP Punkte: {len(hr_seg_mp)}, SD->MP Punkte: {len(sd_seg_mp)}")
 
-        """      
+              
         Dann: Dilatationsalgorithmus 
         - Die funktion dilate(HR_segmentationsliste, SD_Sgmentationsliste beides in MP-Koordinaten) gibt als output 
             eine Liste die, alle Testpunkte enthält, die Testpunkte jeder Dilatation werden in eine Liste geschrieben und 

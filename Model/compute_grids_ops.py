@@ -77,69 +77,74 @@ def extract_segmentation_line(
 Pt = Tuple[float, float]
 
 def correct_segmentation(
-    pts: List[Pt],
-    tol: float = 1.0,
+    pts,
+    tol: float = 1.5,
     auto_close: bool = True,
     max_step: float = 1.0,
-) -> List[Pt] | None:
+    min_index_gap: int = 10,
+):
     """
-    Vereinigt:
-      - '2-Runden'-Korrektur über Duplikate (erste Wiederholung von first, letzte Wiederholung von last)
-      - optionales Auto-Schließen per gerader Verbindung (interpoliert in ~max_step Pixeln)
+    Einfache Logik:
+      - Finde zwei Punkte i<j, die innerhalb 'tol' gleich sind und j-i >= min_index_gap.
+      - Wähle unter allen Treffern das Paar mit größtem (j-i) und gib pts[i:j+1] zurück.
+      - Falls kein Paar existiert:
+          * wenn auto_close=True -> per Geradeninterpolation schließen,
+          * sonst -> None.
+    """
+    import math
 
-    Rückgabe:
-      - Liste geschlossener Punkte (letzter Punkt == erster Punkt innerhalb tol)
-      - oder None, wenn offen bleibt und auto_close=False
-    """
     if not pts or len(pts) < 2:
-        return None
+        return None if not auto_close else list(pts)
 
-    def peq(a: Pt, b: Pt) -> bool:
+    def peq(a, b) -> bool:
         return math.hypot(a[0] - b[0], a[1] - b[1]) <= tol
 
-    def interpolate(p: Pt, q: Pt, step: float) -> List[Pt]:
+    def interpolate(p, q, step: float):
         dx, dy = q[0] - p[0], q[1] - p[1]
         dist = math.hypot(dx, dy)
         if dist == 0:
             return [q]
-        steps = max(1, int(math.ceil(dist / step)))
-        return [(p[0] + dx * (i / steps), p[1] + dy * (i / steps)) for i in range(1, steps + 1)]
+        n = max(1, int(math.ceil(dist / step)))
+        return [(p[0] + dx * (i / n), p[1] + dy * (i / n)) for i in range(1, n + 1)]
 
-    work = list(pts)
+    N = len(pts)
 
-    # --- Runde 1: nach Wiederholung des Startpunkts hinten abschneiden
-    first = work[0]
-    cut1 = None
-    for j in range(1, len(work)):
-        if peq(work[j], first):
-            cut1 = j
+    # 1) Paar gleich(er) Punkte mit größtem Abstand suchen
+    best_i = best_j = None
+    best_span = -1
+    for i in range(0, N - 1):
+        j_start = i + min_index_gap
+        if j_start >= N:
             break
-    if cut1 is not None:
-        work = work[: cut1 + 1]
-        # --- Runde 2: rückwärts – vor Wiederholung des Endpunkts vorne abschneiden
-        last = work[-1]
-        cut2 = None
-        for i in range(len(work) - 2, -1, -1):
-            if peq(work[i], last):
-                cut2 = i
-                break
-        if cut2 is not None:
-            work = work[cut2:]
+        for j in range(j_start, N):
+            if peq(pts[i], pts[j]):
+                span = j - i
+                if span > best_span:
+                    best_span = span
+                    best_i, best_j = i, j
 
-        # Absicherung: geschlossen?
-        if not peq(work[-1], work[0]):
-            work.append(work[0])
-        return work
+    if best_i is not None and best_j is not None:
+        core = list(pts[best_i:best_j + 1])
+        # Optional: sicherstellen, dass Start ~ Ende (bei identischen Enden meist schon erfüllt)
+        if not peq(core[0], core[-1]):
+            if auto_close:
+                core.extend(interpolate(core[-1], core[0], max_step))
+                if not peq(core[-1], core[0]):
+                    core.append(core[0])
+            else:
+                return None
+        return core
 
-    # Keine Wiederholung des Startpunkts gefunden → ggf. automatisch schließen
+    # 2) Kein Duplikat -> offen; nach Wunsch schließen
     if not auto_close:
         return None
 
-    bridge = interpolate(work[-1], work[0], max_step)
-    work.extend(bridge)
-    if not peq(work[-1], work[0]):
-        work.append(work[0])
-    return work
+    closed = list(pts)
+    closed.extend(interpolate(closed[-1], closed[0], max_step))
+    if not peq(closed[-1], closed[0]):
+        closed.append(closed[0])
+    return closed
+
 
 
 def _interpolate_straight(p: Pt, q: Pt, max_step: float) -> List[Pt]:
@@ -153,14 +158,6 @@ def _interpolate_straight(p: Pt, q: Pt, max_step: float) -> List[Pt]:
     return [(p[0] + dx * (i / steps), p[1] + dy * (i / steps)) for i in range(1, steps + 1)]
 
 Point = Tuple[float, float]
-
-def ensure_pointlists_ok(a: List[Point], b: List[Point], c: List[Point], *, min_len: int = 4) -> tuple[bool, str]:
-    """Prüft, ob beide Listen >= min_len und gleich lang sind."""
-    if len(a) < min_len or len(b) < min_len or len(c) < min_len:
-        return (False, f"Not enough points: HR={len(a)}, SD={len(b)} (min. {min_len}).")
-    if len(a) != len(b) or len(a) != len(c) or len(b) != len(c):
-        return (False, f"Unterschiedliche Punktanzahl: HR={len(a)} vs. SD={len(b)}.")
-    return (True, "")
 
 def _euclid(p: Point, q: Point) -> float:
     dx = p[0] - q[0]
