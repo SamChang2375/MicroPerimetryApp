@@ -197,19 +197,12 @@ class MicroPerimetryGUI(QWidget):
 
         # Compute Grid Buttons
         self.bottomRightPanel.add_toolbar_buttons({
-            "Comp Grids AppSeg": self._btn("Comp Grids AppSeg"),
-            "Comp Grids PreSeg": self._btn("Comp Grids PreSeg"),
+            "Comp Grids": self._btn("Comp Grids"),
             "Reset": self._btn("Reset")
         })
         # Compute Grid Button tooltips
-        self.bottomRightPanel.toolbarButtons["Comp Grids AppSeg"].setToolTip(
+        self.bottomRightPanel.toolbarButtons["Comp Grids"].setToolTip(
             "Press this button after all segmentation lines and points are drawn. \n"
-            "This button will then automatically compute the grids, show the resulting MP Grid, \n "
-            "and saves the coordinates to an XML file \n"
-            "that can be uploaded to the MAIA Microperimetry Device.")
-        self.bottomRightPanel.toolbarButtons["Comp Grids PreSeg"].setToolTip(
-            "Press this button after all points are drawn, and use it if one has already \n"
-            "pre-segmented the DRIL areas in the OCT-Application \n"
             "This button will then automatically compute the grids, show the resulting MP Grid, \n "
             "and saves the coordinates to an XML file \n"
             "that can be uploaded to the MAIA Microperimetry Device.")

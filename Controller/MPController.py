@@ -3,7 +3,7 @@ from typing import Dict
 from Model.image_ops import apply_contrast_brightness
 from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool, QRunnable, QTimer
 from PyQt6.QtGui import QImage, QImageReader
-from Controller.enums import MouseStatus, ComputeMode
+from Controller.enums import MouseStatus
 from Model.image_state import ImageState
 from Model.seg_ops import deform_points_gaussian, laplacian_smooth, build_edit_window, nearest_seg_point_index
 from Model.image_ops import apply_contrast_brightness, auto_crop_bars
@@ -168,8 +168,7 @@ class ImageController(QObject):
 
         # ------ FOR COMPUTE GRIDS -----
         br = v.bottomRightPanel.toolbarButtons
-        br["Comp Grids AppSeg"].clicked.connect(lambda: self._on_compute_grids_clicked(ComputeMode.APP_SEG))
-        br["Comp Grids PreSeg"].clicked.connect(lambda: self._on_compute_grids_clicked(ComputeMode.PRE_SEG))
+        br["Comp Grids"].clicked.connect(lambda: self._on_compute_grids_clicked())
         br["Reset"].clicked.connect(self._on_compute_reset_clicked)
 
     # Draw Points Functionality
@@ -429,9 +428,9 @@ class ImageController(QObject):
         return {"highres": v.dropHighRes, "sd": v.dropSD, "micro": v.dropMicro}.get(panel_id)
 
     # Compute Grids Methods
-    def _on_compute_grids_clicked(self, mode: ComputeMode):
+    def _on_compute_grids_clicked(self):
         # Nur Meldung ausgeben (vorerst)
-        print(f"[UI] Compute Grids clicked -> mode={mode}")
+        print(f"[UI] Compute Grids clicked")
 
         # The stored point lists + segmentation masks
         hr = self.states["highres"]
