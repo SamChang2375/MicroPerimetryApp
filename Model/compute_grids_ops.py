@@ -6,6 +6,7 @@ import math
 import itertools
 import numpy as np
 import cv2
+from typing import List, Tuple, Optional, Dict
 
 
 def qimage_to_rgb_np(qimg: QImage) -> np.ndarray:
