@@ -6,8 +6,9 @@ from PyQt6.QtGui import QImage, QImageReader
 from Controller.enums import MouseStatus
 from Model.image_state import ImageState
 from Model.seg_ops import deform_points_gaussian, laplacian_smooth, build_edit_window, nearest_seg_point_index
-from Model.image_ops import apply_contrast_brightness, auto_crop_bars
-from Model.compute_grids_ops import qimage_to_rgb_np, extract_segmentation_line, correct_segmentation, correct_HR_SD_order, correct_SD_MP_order, create_homography_matrix, fmt_mat, transform_coordinates, compose
+from Model.image_ops import apply_contrast_brightness, auto_crop_bars, numpy_rgb_to_qimage
+from Model.compute_grids_ops import extract_segmentation_line, correct_segmentation, sort_points_via_center_overlay, create_homography_matrix, transform_coordinates, compose, order_points_by_min_distance
+import cv2
 
 # Worker infrastructure: Needed because it allows parallel threading parallel to the GUI-Thread by
 # performing calculations in the background.
@@ -333,6 +334,7 @@ class ImageController(QObject):
         self._set_status(panel_id, MouseStatus.IDLE, cursor=False)
 
     # Helper functions for image-itself display and editing (via the contrast and brightness sliders)
+    # Helper functions for image-itself display and editing (via the contrast and brightness sliders)
     def load_image(self, panel_id: str, path: str):
         st = self.states[panel_id]
         st.path = path
@@ -353,15 +355,34 @@ class ImageController(QObject):
                 st.original = qimg_cropped
                 st.crop_rect = bbox
                 st.rgb_np = rgb_np
+
+        elif panel_id in ("micro", "mp"):
+            # Micro-Perimetry: nichts croppen – direkt als RGB-ndarray + QImage übernehmen
+            bgr = cv2.imread(path, cv2.IMREAD_COLOR)
+            if bgr is None:
+                print(f"[LOAD] Konnte Micro-Bild nicht laden: {path}")
+                return
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)  # HxWx3, uint8
+            st.rgb_np = rgb
+            st.original = numpy_rgb_to_qimage(rgb)  # für die GUI
+            st.crop_rect = None
+
         else:
-            # Micro-Perimetry: original lassen
+            # generischer Fallback
             reader = QImageReader(path)
             reader.setAutoTransform(True)
-            st.original = reader.read()
+            img = reader.read()
+            if img.isNull():
+                print(f"[LOAD] Konnte Bild nicht laden: {path}")
+                return
+            st.original = img
             st.crop_rect = None
             st.rgb_np = None
 
-        # Ab hier arbeitet die Pipeline (Slider etc.) mit st.original (also dem Crop)
+        # (optional) alte Annotations beim neuen Bild leeren
+        st.seg_points.clear()
+        st.pts_points.clear()
+        # Ab hier arbeitet die Pipeline (Slider etc.) mit st.original
         self._schedule(panel_id)
 
     def on_contrast(self, panel_id: str, value: int):
@@ -433,6 +454,8 @@ class ImageController(QObject):
         hr = self.states["highres"]
         sd = self.states["sd"]
         mp = self.states["micro"]
+        hr_appsegmented = False
+        sd_appsegmented = False
 
         # Als allererstes prüfen ob überhaupt ein Bild geladen wurde.
         # Wenn mindestens ein Bild fehlt, dann soll eine Fehlermeldung ausgegeben werden.
@@ -470,6 +493,7 @@ class ImageController(QObject):
             hr.seg_points = hr_pts
         elif (not hr_pts) and hr_fixed:
             hr.seg_points = hr_fixed
+            hr_appsegmented = True
         else:
             self._set_status_text("No HR OCT segmentation line was found! Please segment a DRIL line through the controls of the app!", kind = "error")
             return
@@ -483,20 +507,17 @@ class ImageController(QObject):
             sd.seg_points = sd_pts
         elif (not sd_pts) and sd_fixed:
             sd.seg_points = sd_fixed
+            sd_appsegmented = True
         else:
             self._set_status_text("No SD OCT segmentation line was found! Please segment a DRIL line through the controls of the app!", kind="error")
             return
 
         # --- Visualisierung der finalen Segmentierungen im UI ---
         drop_hr = self._drop_of("highres")
-        if drop_hr:
-            drop_hr.set_segmentation(hr.seg_points)
-
+        if drop_hr: drop_hr.set_segmentation(hr.seg_points)
         drop_sd = self._drop_of("sd")
-        if drop_sd:
-            drop_sd.set_segmentation(sd.seg_points)
+        if drop_sd: drop_sd.set_segmentation(sd.seg_points)
 
-        print("Wir sind hier")
         # Jetzt müssen wir prüfen, ob in jedem Panel mehr als 4 Punkte gesesetzt wurden
         if len(hr.pts_points) < 4:
             self._set_status_text("Set at least 4 matching points in the HR OCT Image!", kind="error")
@@ -514,61 +535,29 @@ class ImageController(QObject):
             self._set_status_text("Please set the same number of matching points in each of the images!", kind="error")
             return
 
+        sd.pts_points = order_points_by_min_distance(hr.pts_points, sd.pts_points)
+        mp.pts_points = sort_points_via_center_overlay(sd.rgb_np, mp.rgb_np, sd.pts_points, mp.pts_points)
 
-
-
-        """
-        # SD so umsortieren, dass Reihenfolge zu HR passt
-        hr_new, sd_new = correct_HR_SD_order(hr.pts_points, sd.pts_points)
-        hr.pts_points = hr_new
-        sd.pts_points = sd_new
-
-        self._set_status_text(
-            f"Punktlisten ausgerichtet (HR={len(hr.pts_points)}, SD={len(sd.pts_points)}).",
-            kind="info"
-        )
-
-        # Punktelisten
-        sd_pts_ord, mp_pts_ord, H_sd2mp, info = correct_SD_MP_order(sd.pts_points, mp.pts_points)
-        sd.pts_points = sd_pts_ord
-        mp.pts_points = mp_pts_ord
-        print("[SD↔MP] best_perm:", info['best_perm'], "rmse:", info['rmse'], "method:", info['method'])
-
-        # Homographiematrizen berchnen:
-        # HR → SD
+        # Berechne die Homographie-Matrizen
         H_hr2sd = create_homography_matrix(hr.pts_points, sd.pts_points)
-        print("[H] HR → SD\n" + fmt_mat(H_hr2sd))
-
-        # SD → MP
         H_sd2mp = create_homography_matrix(sd.pts_points, mp.pts_points)
-        print("[H] SD → MP\n" + fmt_mat(H_sd2mp))
 
-        # Transform coordinats and show thm in th MP
-        # Gesamt-Homographie HR -> MP
+        # Transformiere alle Koordinaten ins MP-Koordinatensystem und zeige sie an:
         H_hr2mp = compose(H_sd2mp, H_hr2sd)
-
-        # 1) HR- und SD-Segmentation in MP-Koordinaten bringen
         hr_seg_mp = transform_coordinates(hr.seg_points, H_hr2mp)
         sd_seg_mp = transform_coordinates(sd.seg_points, H_sd2mp)
 
-        # 2) (optional) für spätere Schritte ablegen
-        mp.seg_from_hr = hr_seg_mp
-        mp.seg_from_sd = sd_seg_mp
-
-        # 3) Im MP-Panel einzeichnen
+        # Zeichne die Segmentationslinien ins MP-Koordinatensystem ein:
         drop_mp = self._drop_of("micro")
         if drop_mp:
             # HR->MP als Hauptlinie
             drop_mp.set_segmentation(hr_seg_mp)
-            # SD->MP als zweite Linie, falls unterstützt
-            if hasattr(drop_mp, "set_segmentation2"):
-                drop_mp.set_segmentation2(sd_seg_mp)
+            drop_mp.set_segmentation2(sd_seg_mp)
+        print("Bis hierhin sind wir gekommen!")
 
-        # (optional) kurz ausgeben, um zu sehen, dass’s passt
-        print(f"H_hr2sd=\n{H_hr2sd}\nH_sd2mp=\n{H_sd2mp}\nH_hr2mp=\n{H_hr2mp}")
-        print(f"HR->MP Punkte: {len(hr_seg_mp)}, SD->MP Punkte: {len(sd_seg_mp)}")
+        # Punkte-Setz-Algorithmus
 
-              
+        """
         Dann: Dilatationsalgorithmus 
         - Die funktion dilate(HR_segmentationsliste, SD_Sgmentationsliste beides in MP-Koordinaten) gibt als output 
             eine Liste die, alle Testpunkte enthält, die Testpunkte jeder Dilatation werden in eine Liste geschrieben und 

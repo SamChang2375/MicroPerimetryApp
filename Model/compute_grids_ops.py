@@ -8,88 +8,56 @@ import numpy as np
 import cv2
 from typing import List, Tuple, Optional, Dict
 
-
-def qimage_to_rgb_np(qimg: QImage) -> np.ndarray:
-    """
-    QImage -> np.ndarray (H, W, 3) in RGB.
-    Fallback, falls im ImageState kein rgb_np hinterlegt ist.
-    """
-    if qimg.isNull():
-        return None
-    # Nach RGB888 wandeln (ohne Alpha)
-    qimg = qimg.convertToFormat(QImage.Format.Format_RGB888)
-    w = qimg.width()
-    h = qimg.height()
-    ptr = qimg.bits()
-    ptr.setsize(h * w * 3)
-    arr = np.frombuffer(ptr, np.uint8).reshape((h, w, 3))
-    # QImage liefert bereits RGB888
-    return arr.copy()
-
+# Alternative Lösung mit Konturerkennung
 def extract_segmentation_line(
-    image_rgb: np.ndarray,
-    target_rgb: tuple[int, int, int] = (0, 255, 255),  # Cyan
-    tol: int = 10,
-    min_pixels: int = 20
+        image_rgb: np.ndarray,
+        target_rgb: tuple[int, int, int] = (0, 255, 255),  # Cyan
+        tol: int = 10,
+        min_pixels: int = 20
 ) -> list[tuple[float, float]]:
-    """
-    Findet die längste zusammenhängende Linie (größte Komponente) in der Maske
-    für die gegebene Farbe + Toleranz. Gibt ALLE Punkte (x,y) als float-Tuples zurück,
-    ohne Ausdünnung/Sortierung.
-
-    - image_rgb: HxWx3 (RGB, dtype uint8)
-    - target_rgb: Ziel-Farbe (R,G,B)
-    - tol: Farbtoleranz (je Kanal)
-    - min_pixels: Untergrenze; darunter wird 'keine Linie' angenommen
-    """
     if image_rgb is None:
         return []
 
-    # Farb-Schwelle bauen (clampen auf [0,255])
-    lo = np.array([max(0, target_rgb[0]-tol),
-                   max(0, target_rgb[1]-tol),
-                   max(0, target_rgb[2]-tol)], dtype=np.uint8)
-    hi = np.array([min(255, target_rgb[0]+tol),
-                   min(255, target_rgb[1]+tol),
-                   min(255, target_rgb[2]+tol)], dtype=np.uint8)
+    # Farb-Schwelle
+    lo = np.array([max(0, target_rgb[0] - tol),
+                   max(0, target_rgb[1] - tol),
+                   max(0, target_rgb[2] - tol)], dtype=np.uint8)
+    hi = np.array([min(255, target_rgb[0] + tol),
+                   min(255, target_rgb[1] + tol),
+                   min(255, target_rgb[2] + tol)], dtype=np.uint8)
 
-    # Binärmaske in RGB
-    mask = cv2.inRange(image_rgb, lo, hi)  # 255 = Treffer
+    mask = cv2.inRange(image_rgb, lo, hi)
 
-    # Größte zusammenhängende Komponente finden
-    num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    if num <= 1:
+    # Find contours
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
         return []
 
-    # Label 0 ist Hintergrund. Größte Fläche >0 suchen
-    areas = stats[1:, cv2.CC_STAT_AREA]
-    max_idx = int(1 + np.argmax(areas))
-    if stats[max_idx, cv2.CC_STAT_AREA] < min_pixels:
-        return []
+    # Find longest contour
+    longest_contour = max(contours, key=lambda x: cv2.arcLength(x, False))
 
-    # Koordinaten der größten Komponente holen (als (y,x))
-    ys, xs = np.where(labels == max_idx)
+    # Convert contour points to list of tuples
+    pts = [(float(pt[0][0]), float(pt[0][1])) for pt in longest_contour]
 
-    # In (x,y) umordnen und als Float-Tuples zurückgeben
-    pts = [(float(x), float(y)) for (x, y) in zip(xs, ys)]
     return pts
 
 Pt = Tuple[float, float]
 
+
 def correct_segmentation(
-    pts,
-    tol: float = 1.5,
-    auto_close: bool = True,
-    max_step: float = 1.0,
-    min_index_gap: int = 10,
+        pts,
+        tol: float = 1.5,
+        auto_close: bool = True,
+        max_step: float = 1.0,
+        min_index_gap: int = 10,
 ):
     """
-    Einfache Logik:
-      - Finde zwei Punkte i<j, die innerhalb 'tol' gleich sind und j-i >= min_index_gap.
-      - Wähle unter allen Treffern das Paar mit größtem (j-i) und gib pts[i:j+1] zurück.
-      - Falls kein Paar existiert:
-          * wenn auto_close=True -> per Geradeninterpolation schließen,
-          * sonst -> None.
+    Verbesserte Logik:
+    1. Wenn die Linie bereits geschlossen ist (Anfang ~ Ende), wird sie unverändert zurückgegeben
+    2. Andernfalls wird versucht, die Linie zu schließen:
+       - Finde den Punkt, der dem ersten Punkt am nächsten ist (mit min_index_gap)
+       - Schneide überhängende Teile ab
+       - Verbinde die Enden mit einer geraden Linie
     """
     import math
 
@@ -107,139 +75,172 @@ def correct_segmentation(
         n = max(1, int(math.ceil(dist / step)))
         return [(p[0] + dx * (i / n), p[1] + dy * (i / n)) for i in range(1, n + 1)]
 
-    N = len(pts)
+    # Prüfe ob die Linie bereits geschlossen ist
+    if len(pts) >= 2 and peq(pts[0], pts[-1]):
+        return list(pts)
 
-    # 1) Paar gleich(er) Punkte mit größtem Abstand suchen
-    best_i = best_j = None
-    best_span = -1
-    for i in range(0, N - 1):
-        j_start = i + min_index_gap
-        if j_start >= N:
-            break
-        for j in range(j_start, N):
-            if peq(pts[i], pts[j]):
-                span = j - i
-                if span > best_span:
-                    best_span = span
-                    best_i, best_j = i, j
-
-    if best_i is not None and best_j is not None:
-        core = list(pts[best_i:best_j + 1])
-        # Optional: sicherstellen, dass Start ~ Ende (bei identischen Enden meist schon erfüllt)
-        if not peq(core[0], core[-1]):
-            if auto_close:
-                core.extend(interpolate(core[-1], core[0], max_step))
-                if not peq(core[-1], core[0]):
-                    core.append(core[0])
-            else:
-                return None
-        return core
-
-    # 2) Kein Duplikat -> offen; nach Wunsch schließen
     if not auto_close:
         return None
 
-    closed = list(pts)
-    closed.extend(interpolate(closed[-1], closed[0], max_step))
-    if not peq(closed[-1], closed[0]):
-        closed.append(closed[0])
-    return closed
+    # Finde den besten Endpunkt zum Schließen
+    if len(pts) < min_index_gap + 1:
+        # Linie zu kurz - einfach direkt verbinden
+        closed = list(pts)
+        closed.extend(interpolate(closed[-1], closed[0], max_step))
+        if not peq(closed[-1], closed[0]):
+            closed.append(closed[0])
+        return closed
 
+    # Suche den besten Punkt zum Schließen
+    first_pt = pts[0]
+    best_dist = float('inf')
+    best_idx = -1
 
+    for i in range(min_index_gap, len(pts)):
+        dist = math.hypot(first_pt[0] - pts[i][0], first_pt[1] - pts[i][1])
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = i
 
-def _interpolate_straight(p: Pt, q: Pt, max_step: float) -> List[Pt]:
-    """Gerade Verbindung p->q als Punktefolge (ohne p, mit q am Ende)."""
-    dx, dy = q[0] - p[0], q[1] - p[1]
-    dist = math.hypot(dx, dy)
-    if dist == 0:
-        return [q]
-    # Anzahl Schritte so wählen, dass etwa max_step Pixel Abstand
-    steps = max(1, int(math.ceil(dist / max_step)))
-    return [(p[0] + dx * (i / steps), p[1] + dy * (i / steps)) for i in range(1, steps + 1)]
+    if best_idx == -1 or best_dist > tol * 3:  # Großzügigere Toleranz fürs Schließen
+        # Kein guter Punkt gefunden - einfach direkt verbinden
+        closed = list(pts)
+        closed.extend(interpolate(closed[-1], closed[0], max_step))
+        if not peq(closed[-1], closed[0]):
+            closed.append(closed[0])
+        return closed
+
+    # Schneide überhängende Teile ab und behalte den Hauptteil
+    core = list(pts[:best_idx + 1])
+
+    # Optional: Glätten der Verbindung
+    if len(core) >= 2 and not peq(core[0], core[-1]):
+        core.extend(interpolate(core[-1], core[0], max_step))
+        if not peq(core[-1], core[0]):
+            core.append(core[0])
+
+    return core
 
 Point = Tuple[float, float]
 
-def _euclid(p: Point, q: Point) -> float:
-    dx = p[0] - q[0]
-    dy = p[1] - q[1]
-    return math.hypot(dx, dy)
+# Punktezuordnung über euklidische Distanzen für HR zu SD
+def convert_np_floats_to_tuples(points: List) -> List[Tuple[float, float]]:
+    """Hilfsfunktion um np.float64 Werte in normale Python floats umzuwandeln"""
+    return [(float(x), float(y)) for x, y in points]
 
-def correct_HR_SD_order(hr_pts: List[Point], sd_pts: List[Point]) -> tuple[List[Point], List[Point]]:
+
+def order_points_by_min_distance(
+        pts1: List[Tuple[float, float]],
+        pts2: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
     """
-    Ordnet die SD-Punktliste so um, dass sie 1:1 in der Reihenfolge zur HR-Liste passt.
-    Greedy-1:1-Zuordnung: Für jeden HR-Punkt wird der nächste (noch nicht verwendete) SD-Punkt gewählt.
-    Gibt (hr_pts_unchanged, sd_pts_reordered) zurück.
+    Ordnet die zweite Punktliste basierend auf minimaler euklidischer Distanz zur ersten Liste.
+
+    Args:
+        pts1: Referenzpunktliste (bleibt unverändert)
+        pts2: Zu ordnende Punktliste (kann np.float64 Werte enthalten)
+
+    Returns:
+        Geordnete Version von pts2 mit normalen Python floats
     """
-    n = len(hr_pts)
-    if n != len(sd_pts):
-        raise ValueError(f"Längen unterschiedlich: HR={n} vs. SD={len(sd_pts)}")
-    if n == 0:
-        return ([], [])
+    # Konvertiere np.float64 Werte zu normalen floats
+    pts1 = convert_np_floats_to_tuples(pts1)
+    pts2 = convert_np_floats_to_tuples(pts2)
 
-    used = [False] * n
-    sd_ordered: List[Point] = []
+    if len(pts1) != len(pts2):
+        raise ValueError("Beide Punktlisten müssen gleich lang sein")
 
-    # Für jeden HR-Punkt den nächsten noch freien SD-Punkt wählen
-    for i in range(n):
-        p = hr_pts[i]
-        best_j = None
-        best_d = float("inf")
-        for j in range(n):
-            if used[j]:
+    pts1_arr = np.array(pts1)
+    pts2_arr = np.array(pts2)
+    ordered_pts2 = []
+    used_indices = set()
+
+    for point1 in pts1_arr:
+        min_dist = float('inf')
+        best_idx = -1
+        best_point = None
+
+        # Finde den nächstgelegenen noch nicht verwendeten Punkt
+        for idx, point2 in enumerate(pts2_arr):
+            if idx in used_indices:
                 continue
-            d = _euclid(p, sd_pts[j])
-            if d < best_d:
-                best_d = d
-                best_j = j
-        # Fallback (sollte nicht passieren, aber safety):
-        if best_j is None:
-            # nimm irgendeinen freien
-            best_j = next(k for k in range(n) if not used[k])
-        used[best_j] = True
-        sd_ordered.append(sd_pts[best_j])
 
-    return (list(hr_pts), sd_ordered)
+            dist = np.linalg.norm(point1 - point2)
+            if dist < min_dist:
+                min_dist = dist
+                best_idx = idx
+                best_point = point2
+
+        if best_idx == -1:
+            raise RuntimeError("Kein passender Punkt gefunden")
+
+        used_indices.add(best_idx)
+        ordered_pts2.append(tuple(map(float, best_point)))  # Sicherstellen dass es normale floats sind
+
+    return ordered_pts2
 
 Point = Tuple[float, float]
+PointList = List[Point]
+def sort_points_via_center_overlay(
+    sd_img_cropped: np.ndarray,
+    mp_img: np.ndarray,
+    sd_pts_points: PointList,        # bereits geordnet
+    mp_pts_points_unordered: PointList  # ungeordnet
+) -> PointList:
+    """
+    Pipeline:
+      1) SD-OCT-Bild auf fx=0.778, fy=0.801 skalieren -> resized_sd
+         und SD-Punkteliste identisch skalieren.
+      2) Beide Bilder werden über ihr Zentrum ausgerichtet (nur Translation).
+         => MP-Punkte in das Koordinatensystem des 'resized_sd' transformieren.
+         -> mp_to_sd_unordered
+      3) Sortieren: mp_to_sd_ordered = order_points_by_min_distance(sd_pts_scaled, mp_to_sd_unordered)
+      4) mp_to_sd_ordered zurück ins MP-Koordinatensystem transformieren.
+         -> sd_to_mp_ordered
+      5) Rückgabe: sd_to_mp_ordered
+    """
 
-def _to_np(pts: List[Point]) -> np.ndarray:
-    a = np.asarray(pts, dtype=np.float64)
-    if a.ndim != 2 or a.shape[1] != 2:
-        raise ValueError("points must be Nx2")
-    return a
+    # --- 1) SD-Bild + SD-Punkte skalieren ---
+    fx, fy = 0.778, 0.801
+    # Bild skalieren
+    resized_sd = cv2.resize(sd_img_cropped, dsize=None, fx=fx, fy=fy, interpolation=cv2.INTER_AREA)
 
-def _sym_homography_rmse(src: np.ndarray, dst: np.ndarray, H: np.ndarray) -> float:
-    """Symmetrischer Reprojektionsfehler (hin & zurück). Keine Exceptions."""
-    n = src.shape[0]
-    src_h = np.c_[src, np.ones((n, 1))]
-    dst_h = np.c_[dst, np.ones((n, 1))]
+    # SD-Punkte skalieren (x*fx, y*fy)
+    sd_pts_scaled: PointList = [(x * fx, y * fy) for (x, y) in sd_pts_points]
 
-    # vorwärts
-    proj_d = (src_h @ H.T)
-    proj_d = proj_d[:, :2] / np.maximum(1e-12, proj_d[:, 2:3])
+    # --- 2) Zentriert überlagern: nur Translation, sodass Bildzentren übereinstimmen ---
+    h_sd, w_sd = resized_sd.shape[:2]
+    h_mp, w_mp = mp_img.shape[:2]
+    cx_sd, cy_sd = w_sd / 2.0, h_sd / 2.0
+    cx_mp, cy_mp = w_mp / 2.0, h_mp / 2.0
 
-    # rückwärts
-    try:
-        Hinv = np.linalg.inv(H)
-        proj_s = (dst_h @ Hinv.T)
-        proj_s = proj_s[:, :2] / np.maximum(1e-12, proj_s[:, 2:3])
-        err = np.sqrt(np.sum((proj_d - dst) ** 2, axis=1) + np.sum((proj_s - src) ** 2, axis=1))
-        return float(np.mean(err))
-    except np.linalg.LinAlgError:
-        # Wenn H nicht invertierbar ist, nur vorwärtsfehler doppelt werten
-        err = np.sqrt(np.sum((proj_d - dst) ** 2, axis=1))
-        return float(2.0 * np.mean(err))
+    # MP -> SD (zentrierte) Koordinaten: p_sd = p_mp - c_mp + c_sd
+    def mp_to_sd(p: Point) -> Point:
+        x, y = p
+        return (x - cx_mp + cx_sd, y - cy_mp + cy_sd)
 
-def _normalized_l2_cost(src: np.ndarray, dst: np.ndarray) -> float:
-    """Fallback-Kosten: beide Mengen zentrieren & auf Einheitsvarianz skalieren, dann mittlere Distanz."""
-    def norm(x: np.ndarray) -> np.ndarray:
-        m = x.mean(axis=0, keepdims=True)
-        s = x.std(axis=0, keepdims=True)
-        s[s < 1e-12] = 1.0
-        return (x - m) / s
-    src_n = norm(src)
-    dst_n = norm(dst)
-    return float(np.linalg.norm(src_n - dst_n, axis=1).mean())
+    # Inverse Transformation: SD -> MP
+    def sd_to_mp(p: Point) -> Point:
+        x, y = p
+        return (x - cx_sd + cx_mp, y - cy_mp + cy_mp)  # (typo check below)
+
+    # Korrigierte inverse Transformation (oben war ein Tippfehler):
+    def sd_to_mp(p: Point) -> Point:
+        x, y = p
+        return (x - cx_sd + cx_mp, y - cy_sd + cy_mp)
+
+    # Ungeordnete MP-Punkte in SD-Koordinaten
+    mp_to_sd_unordered: PointList = [mp_to_sd(p) for p in mp_pts_points_unordered]
+
+    # --- 3) Sortieren (existierende Funktion nutzen) ---
+    mp_to_sd_ordered: PointList = order_points_by_min_distance(sd_pts_scaled, mp_to_sd_unordered)
+
+    # --- 4) Zurück nach MP-Koordinaten ---
+    sd_to_mp_ordered: PointList = [sd_to_mp(p) for p in mp_to_sd_ordered]
+
+    # --- 5) Ergebnis zurückgeben ---
+    return sd_to_mp_ordered
+
+Point = Tuple[float, float]
 
 def _homography_or_affine(src: np.ndarray, dst: np.ndarray) -> Optional[np.ndarray]:
     """Erst Homographie, sonst Affine->Homographie, sonst None (aber wir brechen nie außen ab)."""
@@ -252,104 +253,6 @@ def _homography_or_affine(src: np.ndarray, dst: np.ndarray) -> Optional[np.ndarr
         H_aff[:2, :3] = A
         return H_aff
     return None
-
-def correct_SD_MP_order(
-    sd_points: List[Point],
-    mp_points: List[Point],
-) -> Tuple[List[Point], List[Point], np.ndarray, Dict]:
-    """
-    Ordnet MP-Punkte so an, dass sie bestmöglich zu den SD-Punkten passen.
-    - prüft ALLE Permutationen (für N<=8 praktikabel),
-    - KEINE Schwellenwerte, KEIN Abbruch,
-    - gibt IMMER ein Ergebnis zurück (Permutation, H, Metriken).
-
-    Returns:
-        sd_ordered: identisch zu Eingabe (nur zur Einheitlichkeit)
-        mp_ordered: MP-Punkte in SD-Reihenfolge
-        H_sd2mp: 3x3 (Homographie falls möglich, sonst Affine als H, sonst Identität)
-        info: { 'best_perm': tuple, 'rmse': float, 'fallback_cost': float, 'method': 'homography'|'affine'|'identity' }
-    """
-    S = _to_np(sd_points)
-    M = _to_np(mp_points)
-    N = S.shape[0]
-
-    # Falls unterschiedliche Längen: auf min(N) kürzen (immer ein Ergebnis liefern)
-    if M.shape[0] != N:
-        n = min(N, M.shape[0])
-        S = S[:n].copy()
-        M = M[:n].copy()
-        N = n
-
-    # Triviale Fälle handhaben
-    if N == 0:
-        return [], [], np.eye(3, dtype=np.float64), {'best_perm': (), 'rmse': 0.0, 'fallback_cost': 0.0, 'method': 'identity'}
-    if N < 4:
-        # Für <4 Punkte: keine eindeutige Homographie -> wähle Permutation mit kleinstem normalisierten L2
-        best_cost = float('inf'); best_perm = tuple(range(N))
-        for perm in itertools.permutations(range(N)):
-            Mp = M[list(perm)]
-            cost = _normalized_l2_cost(S, Mp)
-            if cost < best_cost:
-                best_cost = cost; best_perm = perm
-        Mp_best = M[list(best_perm)]
-        # affine (wenn möglich), sonst Identität
-        H = _homography_or_affine(S, Mp_best)
-        method = 'homography' if (H is not None and not np.allclose(H, np.eye(3))) else 'identity'
-        if H is None: H = np.eye(3, dtype=np.float64); method = 'identity'
-        return S.tolist(), Mp_best.tolist(), H, {
-            'best_perm': best_perm, 'rmse': _normalized_l2_cost(S, Mp_best),
-            'fallback_cost': best_cost, 'method': method
-        }
-
-    # N >= 4 -> volle Bruteforce-Suche über Permutationen
-    best_perm = None
-    best_rmse = float('inf')
-    best_fallback = float('inf')
-    best_H: Optional[np.ndarray] = None
-    best_method = 'identity'
-
-    for perm in itertools.permutations(range(N)):
-        Mp = M[list(perm)]
-
-        H = _homography_or_affine(S, Mp)
-        if H is not None:
-            rmse = _sym_homography_rmse(S, Mp, H)
-            method = 'homography' if H[2,2] != 0 and not np.allclose(H, np.eye(3)) else 'affine'
-            # (Wir wählen *immer* das Minimum; keine Schwellen/Abbrüche)
-            if rmse < best_rmse:
-                best_rmse = rmse
-                best_fallback = _normalized_l2_cost(S, Mp)
-                best_perm = perm
-                best_H = H
-                best_method = method
-        else:
-            # Fallback-Kosten verwenden (damit wir *immer* eine Metrik haben)
-            cost = _normalized_l2_cost(S, Mp)
-            if cost < best_fallback:
-                best_fallback = cost
-                best_perm = perm
-                best_H = None
-                best_method = 'identity'
-
-    Mp_best = M[list(best_perm)]
-    if best_H is None:
-        # Letzter Fallback: Identität
-        best_H = np.eye(3, dtype=np.float64)
-        # RMSE sinnvoll befüllen (normierter L2 als Surrogat)
-        best_rmse = _normalized_l2_cost(S, Mp_best)
-        best_method = 'identity'
-
-    return S.tolist(), Mp_best.tolist(), best_H, {
-        'best_perm': best_perm,
-        'rmse': float(best_rmse),
-        'fallback_cost': float(best_fallback),
-        'method': best_method,
-    }
-
-# Homographie Matrizen berechnen:
-# Model/compute_grids.py
-import numpy as np
-import cv2
 
 def create_homography_matrix(src_points, dst_points):
     """
@@ -381,3 +284,4 @@ def compose(H2, H1):
     """Ergibt die Verkettung erst H1, dann H2 (also H2 @ H1)."""
     return None if H1 is None or H2 is None else (H2 @ H1)
 
+# Alle Funktionen,

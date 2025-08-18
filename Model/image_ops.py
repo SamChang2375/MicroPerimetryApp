@@ -36,7 +36,7 @@ def apply_contrast_brightness(qimg: QImage, contrast_percent: int, brightness_pe
     qout = QImage(out.data, w, h, w * 4, QImage.Format.Format_RGBA8888).copy()
     return qout
 
-def _numpy_rgb_to_qimage(rgb: np.ndarray) -> QImage:
+def numpy_rgb_to_qimage(rgb: np.ndarray) -> QImage:
     h, w, _ = rgb.shape
     # Achtung: QImage darf nicht auf flüchtigen Speicher zeigen -> copy()
     qimg = QImage(
@@ -87,6 +87,6 @@ def auto_crop_bars(path: str, black_thr: int = 25, white_thr: int = 230):
     # zuschneiden (am Farbbild!)
     cropped_bgr = bgr[:y_end, x_start:x_end, :].copy()
     rgb = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2RGB)
-    qimg = _numpy_rgb_to_qimage(rgb)
+    qimg = numpy_rgb_to_qimage(rgb)
     bbox = (x_start, 0, x_end, y_end)
     return qimg, rgb, bbox

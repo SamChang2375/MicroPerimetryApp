@@ -4,8 +4,9 @@ from pathlib import Path
 from Controller.enums import MouseStatus
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QBrush, QWheelEvent, QImageReader
+import cv2
 
-from Model.image_ops import auto_crop_bars
+from Model.image_ops import auto_crop_bars,numpy_rgb_to_qimage
 
 ALLOWED = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"} # Allowed Image Formats
 
@@ -422,8 +423,8 @@ class ImageDropArea(QLabel):
         st.path = path
 
         if panel_id in ("highres", "sd"):
-            qimg_cropped = None;
-            rgb_np = None;
+            qimg_cropped = None
+            rgb_np = None
             bbox = None
             try:
                 qimg_cropped, rgb_np, bbox = auto_crop_bars(path)
@@ -445,9 +446,22 @@ class ImageDropArea(QLabel):
                 # zugeschnittenes Bild übernehmen
                 st.original = qimg_cropped
                 st.crop_rect = bbox  # z.B. (x0, y0, x1, y1)
-                st.rgb_np = rgb_np  # optional: Numpy-RGB fürs Processing
+                st.rgb_np = rgb_np  # Numpy-RGB fürs Processing
+
+        elif panel_id in "micro":
+            # Für MP-Bild: nichts croppen, nur direkt laden
+            bgr = cv2.imread(path, cv2.IMREAD_COLOR)
+            if bgr is None:
+                print(f"[LOAD] Konnte MP-Bild nicht laden: {path}")
+                return
+
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            st.rgb_np = rgb
+            st.original = numpy_rgb_to_qimage(rgb)
+            st.crop_rect = None
 
         else:
+            # generischer Fallback
             reader = QImageReader(path)
             reader.setAutoTransform(True)
             img = reader.read()
@@ -461,8 +475,6 @@ class ImageDropArea(QLabel):
         # (optional) alte Annotations beim neuen Bild leeren
         st.seg_points.clear()
         st.pts_points.clear()
-
-        print(f"[LOAD] {panel_id}: size={st.original.size()}, crop_rect={getattr(st, 'crop_rect', None)}")
         self._schedule(panel_id)
 
     def clear_image(self):
