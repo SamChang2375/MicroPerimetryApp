@@ -45,7 +45,7 @@ def _numpy_rgb_to_qimage(rgb: np.ndarray) -> QImage:
     ).copy()
     return qimg
 
-def auto_crop_bars(path: str, black_thr: int = 5, white_thr: int = 250):
+def auto_crop_bars(path: str, black_thr: int = 25, white_thr: int = 230):
     """
     Schneidet links/rechts weiße Ränder und unten schwarze Leiste weg.
     Gibt (QImage_cropped, rgb_np, (x0, y0, x1, y1)) zurück.
