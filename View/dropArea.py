@@ -3,7 +3,9 @@ from PyQt6.QtCore import QRectF
 from pathlib import Path
 from Controller.enums import MouseStatus
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF
-from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QBrush, QWheelEvent
+from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QBrush, QWheelEvent, QImageReader
+
+from Model.image_ops import auto_crop_bars
 
 ALLOWED = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"} # Allowed Image Formats
 
@@ -45,6 +47,11 @@ class ImageDropArea(QLabel):
         self._seg_points: list[QPointF] = [] # No segmentation set
         self._overlay_color = QColor(255, 0, 0) # Red color for visualization
         self._overlay_width = 1
+
+        # For displaying in the MP - the second segmentation line
+        self._seg2_points = []
+        self._overlay2_color = QColor(0, 255, 0)  # z.B. Grün
+        self._overlay2_width = 1
 
         # Initial status of points drawn:
         self._points: list[QPointF] = [] # No drawn points yet
@@ -253,6 +260,17 @@ class ImageDropArea(QLabel):
                     p.drawLine(last, wpt)
                 last = wpt
 
+        if len(self._seg2_points) >= 0:
+            pen2 = QPen(self._overlay2_color, self._overlay2_width)
+            pen2.setCosmetic(True)
+            p.setPen(pen2)
+            last2 = None
+            for pt_img in self._seg2_points:
+                wpt2 = self._image_to_widget(pt_img)
+                if last2 is not None:
+                    p.drawLine(last2, wpt2)
+                last2 = wpt2
+
         # 2) Draw the points
         if self._points:
             pen = QPen(self._points_color, 1)
@@ -399,25 +417,59 @@ class ImageDropArea(QLabel):
     def set_mouse_status(self, status: MouseStatus):
         self._status = status
 
-    def load_image(self, path: str) -> bool:
-        pm = QPixmap(path)
-        if pm.isNull():
-            return False
-        self._pixmap = pm
-        self._path = path
-        self._seg_points.clear()
-        self._points.clear()
-        self._reset_view()
-        self.setPixmap(QPixmap())
-        self.setText("")
-        self.update()
-        return True
+    def load_image(self, panel_id: str, path: str):
+        st = self.states[panel_id]
+        st.path = path
+
+        if panel_id in ("highres", "sd"):
+            qimg_cropped = None;
+            rgb_np = None;
+            bbox = None
+            try:
+                qimg_cropped, rgb_np, bbox = auto_crop_bars(path)
+            except Exception as e:
+                print(f"[CROP] auto_crop_bars failed: {e!r}")
+
+            if qimg_cropped is None or qimg_cropped.isNull():
+                # Fallback: normal laden
+                reader = QImageReader(path)
+                reader.setAutoTransform(True)
+                img = reader.read()
+                if img.isNull():
+                    print(f"[LOAD] Konnte Bild nicht laden: {path}")
+                    return
+                st.original = img
+                st.crop_rect = None
+                st.rgb_np = None
+            else:
+                # zugeschnittenes Bild übernehmen
+                st.original = qimg_cropped
+                st.crop_rect = bbox  # z.B. (x0, y0, x1, y1)
+                st.rgb_np = rgb_np  # optional: Numpy-RGB fürs Processing
+
+        else:
+            reader = QImageReader(path)
+            reader.setAutoTransform(True)
+            img = reader.read()
+            if img.isNull():
+                print(f"[LOAD] Konnte Bild nicht laden: {path}")
+                return
+            st.original = img
+            st.crop_rect = None
+            st.rgb_np = None
+
+        # (optional) alte Annotations beim neuen Bild leeren
+        st.seg_points.clear()
+        st.pts_points.clear()
+
+        print(f"[LOAD] {panel_id}: size={st.original.size()}, crop_rect={getattr(st, 'crop_rect', None)}")
+        self._schedule(panel_id)
 
     def clear_image(self):
         self._pixmap = None
         self._path = None
         self._seg_points.clear()
-        self.setText("Bild hierher ziehen …")
+        self.setText("Drag&Drop imag here")
         self.update()
 
     @property
@@ -471,3 +523,11 @@ class ImageDropArea(QLabel):
         self.setText("")
         self.update()
 
+    def set_segmentation2(self, pts_img):
+        from PyQt6.QtCore import QPointF
+        self._seg2_points = [QPointF(p[0], p[1]) if not isinstance(p, QPointF) else p for p in pts_img]
+        self.update()
+
+    def clear_segmentation2(self):
+        self._seg2_points.clear()
+        self.update()

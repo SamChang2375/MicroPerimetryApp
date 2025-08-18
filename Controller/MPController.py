@@ -7,6 +7,7 @@ from Controller.enums import MouseStatus, ComputeMode
 from Model.image_state import ImageState
 from Model.seg_ops import deform_points_gaussian, laplacian_smooth, build_edit_window, nearest_seg_point_index
 from Model.image_ops import apply_contrast_brightness, auto_crop_bars
+from Model.compute_grids_ops import qimage_to_rgb_np, extract_segmentation_line, correct_segmentation, ensure_pointlists_ok, correct_HR_SD_order, correct_SD_MP_order, create_homography_matrix, fmt_mat, transform_coordinates, compose
 
 # Worker infrastructure: Needed because it allows parallel threading parallel to the GUI-Thread by
 # performing calculations in the background.
@@ -167,8 +168,8 @@ class ImageController(QObject):
 
         # ------ FOR COMPUTE GRIDS -----
         br = v.bottomRightPanel.toolbarButtons
-        br["Comp Grids AppSeg"].clicked.connect(lambda: self._on_compute_grids_clicked("appseg"))
-        br["Comp Grids PreSeg"].clicked.connect(lambda: self._on_compute_grids_clicked("preseg"))
+        br["Comp Grids AppSeg"].clicked.connect(lambda: self._on_compute_grids_clicked(ComputeMode.APP_SEG))
+        br["Comp Grids PreSeg"].clicked.connect(lambda: self._on_compute_grids_clicked(ComputeMode.PRE_SEG))
         br["Reset"].clicked.connect(self._on_compute_reset_clicked)
 
     # Draw Points Functionality
@@ -182,14 +183,15 @@ class ImageController(QObject):
 
     # Draw Segmentation Functionality
     def _draw_seg_activate(self, panel_id: str):
-        self.states[panel_id].seg_points.clear() # Allows for only one segmentation line to be drawn.
         self._set_status(panel_id, MouseStatus.DRAW_SEG)
 
     def _seg_start(self, panel_id: str, x: float, y: float):
-        if not self._status_is(panel_id, MouseStatus.DRAW_SEG): return
+        if not self._status_is(panel_id, MouseStatus.DRAW_SEG):
+            return
         st = self.states[panel_id]
-        st.seg_points = [(x, y)] # Add the starting point to the segmentation point list
-        self._drop_of(panel_id).set_segmentation(st.seg_points) # Update the view
+        # Hier neu anfangen -> bestehende Linie ersetzen
+        st.seg_points = [(x, y)]
+        self._drop_of(panel_id).set_segmentation(st.seg_points)
 
     def _seg_move(self, panel_id: str, x: float, y: float):
         if not self._status_is(panel_id, MouseStatus.DRAW_SEG): return
@@ -427,27 +429,195 @@ class ImageController(QObject):
         return {"highres": v.dropHighRes, "sd": v.dropSD, "micro": v.dropMicro}.get(panel_id)
 
     # Compute Grids Methods
-    def _on_compute_grids_clicked(self, mode: str):
+    def _on_compute_grids_clicked(self, mode: ComputeMode):
         # Nur Meldung ausgeben (vorerst)
         print(f"[UI] Compute Grids clicked -> mode={mode}")
 
-        """
-        Diese Funktion soll jetzt folgenden Algorithmus ausführen:
-        Zunächst sollen alle 3 Imagestates von den 3 Panels in einer eigenen Variable gespeichert werden, 
-        um darauf bequem zugreifen zu können.  
-        - Diese Methode braucht noch einen weiteren Parameter ComputeMode. 
-        Wenn ComputeMode == ComputeMode.PRE_SEG, dann bedeutet dass das schon vorher in der PNG eine Segmentationslinie 
-        einzeichnet wurde. 
-        Das bedeutet: 
-        - Beim high-Res OCT bild und beim SD-OCT Bild müssen wir aus dem Bild heraus die Segmentationsmasken extrahieren. 
-        - Die dabei erstellten Punktelisten werden ersetzt bei den Imagestate Objekte.
-        Wenn ComputeMode == ComputeMode.APP_SEG, dann passiert nichts.
-        Dann müssen wir die Punktelisten der 3 Imagepanels prüfen. 
-        - Wenn eine der Listen weniger als 4 Punkte hat: Fehlermeldung ausgben aus der Ausgabezeile. 
-        - Nehme High-Res OCT und 
+        # The stored point lists + segmentation masks
+        hr = self.states["highres"]
+        sd = self.states["sd"]
+        mp = self.states["micro"]
+
+        # Get the id and check - only pass if the entered value is numeric.
+        raw = self.view.computeInput.text().strip()
+        if not raw.isdigit():
+            self._set_status_text("Please only enter a numeric-value patient ID!", kind="error")
+            return
+        # Used when creating the XML file name.
+        patient_id = int(raw)
+
+        target_rgb = (0, 255, 255)  # Cyan
+        tol = 10
+        if mode == ComputeMode.PRE_SEG:
+            # --- HighRes ---
+            hr_img = hr.rgb_np if hr.rgb_np is not None else qimage_to_rgb_np(hr.original)
+            hr_pts = extract_segmentation_line(hr_img, target_rgb, tol=tol)
+            if not hr_pts:
+                self._set_status_text("No Pre-segmented HR OCT segmentation line was found!", kind="error")
+                return
+            hr.seg_points = hr_pts
+
+            # --- SD ---
+            sd_img = sd.rgb_np if sd.rgb_np is not None else qimage_to_rgb_np(sd.original)
+            sd_pts = extract_segmentation_line(sd_img, target_rgb, tol=tol)
+            if not sd_pts:
+                self._set_status_text("No Pre-segmented SD OCT segmentation line was found!", kind="error")
+                return
+            sd.seg_points = sd_pts
+
+        elif mode == ComputeMode.APP_SEG:
+            TOL = 1.0
+            STEP = 1.0
+
+            # High Res
+            if not hr.seg_points:
+                self._set_status_text("No App-Segmented HR OCT segmentation line was found!.", kind="error");
+                return
+            hr_fixed = correct_segmentation(hr.seg_points, tol=TOL, auto_close=True, max_step=STEP)
+            hr.seg_points = hr_fixed
+
+            # SD OCT
+            if not sd.seg_points:
+                self._set_status_text("No App-Segmented SD OCT segmentation line was found!", kind="error");
+                return
+            sd_fixed = correct_segmentation(sd.seg_points, tol=TOL, auto_close=True, max_step=STEP)
+            sd.seg_points = sd_fixed
+
+        # Punkte prüfen
+        ok, msg = ensure_pointlists_ok(hr.pts_points, sd.pts_points, min_len=4)
+        if not ok:
+            self._set_status_text(msg, kind="error")
+            return
+        # SD so umsortieren, dass Reihenfolge zu HR passt
+        hr_new, sd_new = correct_HR_SD_order(hr.pts_points, sd.pts_points)
+        hr.pts_points = hr_new
+        sd.pts_points = sd_new
+
+        self._set_status_text(
+            f"Punktlisten ausgerichtet (HR={len(hr.pts_points)}, SD={len(sd.pts_points)}).",
+            kind="info"
+        )
+
+        # Punktelisten
+        sd_pts_ord, mp_pts_ord, H_sd2mp, info = correct_SD_MP_order(sd.pts_points, mp.pts_points)
+        sd.pts_points = sd_pts_ord
+        mp.pts_points = mp_pts_ord
+        print("[SD↔MP] best_perm:", info['best_perm'], "rmse:", info['rmse'], "method:", info['method'])
+
+        # Homographiematrizen berchnen:
+        # HR → SD
+        H_hr2sd = create_homography_matrix(hr.pts_points, sd.pts_points)
+        print("[H] HR → SD\n" + fmt_mat(H_hr2sd))
+
+        # SD → MP
+        H_sd2mp = create_homography_matrix(sd.pts_points, mp.pts_points)
+        print("[H] SD → MP\n" + fmt_mat(H_sd2mp))
+
+        # Transform coordinats and show thm in th MP
+        # Gesamt-Homographie HR -> MP
+        H_hr2mp = compose(H_sd2mp, H_hr2sd)
+
+        # 1) HR- und SD-Segmentation in MP-Koordinaten bringen
+        hr_seg_mp = transform_coordinates(hr.seg_points, H_hr2mp)
+        sd_seg_mp = transform_coordinates(sd.seg_points, H_sd2mp)
+
+        # 2) (optional) für spätere Schritte ablegen
+        mp.seg_from_hr = hr_seg_mp
+        mp.seg_from_sd = sd_seg_mp
+
+        # 3) Im MP-Panel einzeichnen
+        drop_mp = self._drop_of("micro")
+        if drop_mp:
+            # HR->MP als Hauptlinie
+            drop_mp.set_segmentation(hr_seg_mp)
+            # SD->MP als zweite Linie, falls unterstützt
+            if hasattr(drop_mp, "set_segmentation2"):
+                drop_mp.set_segmentation2(sd_seg_mp)
+
+        # (optional) kurz ausgeben, um zu sehen, dass’s passt
+        print(f"H_hr2sd=\n{H_hr2sd}\nH_sd2mp=\n{H_sd2mp}\nH_hr2mp=\n{H_hr2mp}")
+        print(f"HR->MP Punkte: {len(hr_seg_mp)}, SD->MP Punkte: {len(sd_seg_mp)}")
+
+        """      
+        Dann: Dilatationsalgorithmus 
+        - Die funktion dilate(HR_segmentationsliste, SD_Sgmentationsliste beides in MP-Koordinaten) gibt als output 
+            eine Liste die, alle Testpunkte enthält, die Testpunkte jeder Dilatation werden in eine Liste geschrieben und 
+            gespeichert.
+        
+        Die funktion write_to_xml enthält als Intput die Liste an Testpunkten und schreibt das alles in eine XML-Datei. 
+        
+        Wenn das abgeschlossen ist, öffnt sich ein Fnster. bei diesem Explorer-Auswahl fnster soll man auswähln, 
+        in welchen Ornder die Ergebniss gespeichert werden sollen. 
+        Wenn dann auf "auswählen" bzw. "okay" gdrückt wird, dann passirt folgndes: 
+        - In dem MP Bild werdn eingzeichnet: Alle Testpunkt der Dilatationen. 
+        - Zeitgleich gespeichert werden in dem ausgwählten Ordner: 
+            - Die erzeugte XML-Datei mit den Testpunktn im Format ID_XML_Testpoints (ID = die Zahl vom Eingabefeld eingelesen)
+            - Das Mikroperimetriebild mit dn Testpunktn zur späteren Visualisirung im Namensformat ID_MP_Testpoints. 
+        - Auf der Ausgabzeile soll in Grün folgende Ausgabe gegben werden: Die Ergebnisse wurden im folgenden Ordner gespeichert: 
+        + Pfad zum Ordner. 
+        
+        Alle funktionn sollen in einer Model-Datei compute_grids.py gespichert werden und dann in den Controller importiert werden.
         """
 
     def _on_compute_reset_clicked(self):
-        print("[UI] Compute Reset clicked")
-        if hasattr(self.view, "computeStatus"):
+        # 1) Laufende Debounce-Timer stoppen
+        for pid in ("highres", "sd", "micro"):
+            t = self._debounce.get(pid)
+            if t:
+                t.stop()
+
+        # 2) UI der drei Panels leeren (Bild, Segmente, Punkte) und Cursor/Status zurück
+        for pid in ("highres", "sd", "micro"):
+            drop = self._drop_of(pid)
+            if drop:
+                try:
+                    drop.clear_segmentation()
+                    drop.clear_points()
+                    drop.clear_image()
+                    drop.set_draw_cursor(False)
+                    drop.set_mouse_status(MouseStatus.IDLE)
+                except Exception as e:
+                    print(f"[RESET] drop-area cleanup for {pid} failed: {e}")
+
+        # 3) States neu anlegen (wirklich alles weg)
+        for pid in ("highres", "sd", "micro"):
+            self.states[pid] = ImageState()
+            self.mode[pid] = MouseStatus.IDLE
+            self._edit_last_xy[pid] = None
+
+        # 4) Slider auf Default zurücksetzen (Signale kurz blocken)
+        for pid in ("highres", "sd", "micro"):
+            panel = self._panel_of(pid)
+            if panel:
+                if getattr(panel, "contrastSlider", None):
+                    panel.contrastSlider.blockSignals(True)
+                    panel.contrastSlider.setValue(150)
+                    panel.contrastSlider.blockSignals(False)
+                if getattr(panel, "brightnessSlider", None):
+                    panel.brightnessSlider.blockSignals(True)
+                    panel.brightnessSlider.setValue(0)
+                    panel.brightnessSlider.blockSignals(False)
+
+        # 5) Eingabefeld & Statuszeile säubern
+        if hasattr(self.view, "computeInput") and self.view.computeInput:
+            self.view.computeInput.clear()
+        if hasattr(self.view, "computeStatus") and self.view.computeStatus:
+            # neutrale Optik wiederherstellen
             self.view.computeStatus.clear()
+            self.view.computeStatus.setStyleSheet(
+                "QLineEdit { background:#1e1e1e; color:#d8d8d8; padding:2px 6px; }"
+            )
+
+    def _set_status_text(self, msg: str, *, kind: str = "info"):
+        # Farben: error = Orange, info = hellgrau, ok = Grün
+        colors = {
+            "error": "#ff9f1a",
+            "info": "#d8d8d8",
+            "ok": "#6bd66b",
+        }
+        col = colors.get(kind, "#d8d8d8")
+        # Basis-Style aus deinem GUI-Code beibehalten, nur Farbe umschalten
+        self.view.computeStatus.setStyleSheet(
+            f"QLineEdit {{ background:#1e1e1e; color:{col}; padding:2px 6px; }}"
+        )
+        self.view.computeStatus.setText(msg)

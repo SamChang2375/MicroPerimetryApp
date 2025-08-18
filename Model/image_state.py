@@ -23,4 +23,4 @@ class ImageState:
 
     # NEU:
     crop_rect: Optional[tuple[int, int, int, int]] = None  # (x_start, y_start, x_end, y_end)
-    rgb_np: Optional[NdArray] = None                       # optional: RGB-Array des Crops
+    rgb_np: Optional[NdArray] = None # optional: RGB-Array des Crops
