@@ -75,6 +75,8 @@ class ImageDropArea(QLabel):
         self._zoom: float = 1.0 # Standard: Show at 100%
         self._center: QPointF | None = None
 
+        self._points_radius: float = 2.0
+
     # Mouse events - different actions according to set Status
     def mousePressEvent(self, e):
         # If no image is loaded yet, nothing will happen!
@@ -278,7 +280,7 @@ class ImageDropArea(QLabel):
             pen.setCosmetic(True) # The points will always have the same radius
             p.setPen(pen)
             p.setBrush(QBrush(self._points_color))
-            r = self._points_radius
+            r = float(self._points_radius)
             for pt_img in self._points:
                 wpt = self._image_to_widget(pt_img)
                 p.drawEllipse(wpt, r, r)
@@ -542,4 +544,12 @@ class ImageDropArea(QLabel):
 
     def clear_segmentation2(self):
         self._seg2_points.clear()
+        self.update()
+
+    def set_points_style(self, *, color: tuple[int, int, int] | None = None, radius: float | None = None):
+        """Öffentliche API zum Ändern der Punktdarstellung."""
+        if color is not None:
+            self._points_color = QColor(*color)
+        if radius is not None:
+            self._points_radius = float(radius)
         self.update()

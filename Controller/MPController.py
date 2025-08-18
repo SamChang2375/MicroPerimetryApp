@@ -7,7 +7,7 @@ from Controller.enums import MouseStatus
 from Model.image_state import ImageState
 from Model.seg_ops import deform_points_gaussian, laplacian_smooth, build_edit_window, nearest_seg_point_index
 from Model.image_ops import apply_contrast_brightness, auto_crop_bars, numpy_rgb_to_qimage
-from Model.compute_grids_ops import extract_segmentation_line, correct_segmentation, sort_points_via_center_overlay, create_homography_matrix, transform_coordinates, compose, order_points_by_min_distance
+from Model.compute_grids_ops import extract_segmentation_line, correct_segmentation, sort_points_via_center_overlay, create_homography_matrix, transform_coordinates, compose, order_points_by_min_distance, check_segmentation_overlap, build_mp_point_sets
 import cv2
 
 # Worker infrastructure: Needed because it allows parallel threading parallel to the GUI-Thread by
@@ -541,6 +541,7 @@ class ImageController(QObject):
         # Berechne die Homographie-Matrizen
         H_hr2sd = create_homography_matrix(hr.pts_points, sd.pts_points)
         H_sd2mp = create_homography_matrix(sd.pts_points, mp.pts_points)
+        print(H_sd2mp)
 
         # Transformiere alle Koordinaten ins MP-Koordinatensystem und zeige sie an:
         H_hr2mp = compose(H_sd2mp, H_hr2sd)
@@ -553,29 +554,27 @@ class ImageController(QObject):
             # HR->MP als Hauptlinie
             drop_mp.set_segmentation(hr_seg_mp)
             drop_mp.set_segmentation2(sd_seg_mp)
-        print("Bis hierhin sind wir gekommen!")
 
-        # Punkte-Setz-Algorithmus
+        validOverlap = check_segmentation_overlap(hr_seg_mp, sd_seg_mp)
 
-        """
-        Dann: Dilatationsalgorithmus 
-        - Die funktion dilate(HR_segmentationsliste, SD_Sgmentationsliste beides in MP-Koordinaten) gibt als output 
-            eine Liste die, alle Testpunkte enthält, die Testpunkte jeder Dilatation werden in eine Liste geschrieben und 
-            gespeichert.
-        
-        Die funktion write_to_xml enthält als Intput die Liste an Testpunkten und schreibt das alles in eine XML-Datei. 
-        
-        Wenn das abgeschlossen ist, öffnt sich ein Fnster. bei diesem Explorer-Auswahl fnster soll man auswähln, 
-        in welchen Ornder die Ergebniss gespeichert werden sollen. 
-        Wenn dann auf "auswählen" bzw. "okay" gdrückt wird, dann passirt folgndes: 
-        - In dem MP Bild werdn eingzeichnet: Alle Testpunkt der Dilatationen. 
-        - Zeitgleich gespeichert werden in dem ausgwählten Ordner: 
-            - Die erzeugte XML-Datei mit den Testpunktn im Format ID_XML_Testpoints (ID = die Zahl vom Eingabefeld eingelesen)
-            - Das Mikroperimetriebild mit dn Testpunktn zur späteren Visualisirung im Namensformat ID_MP_Testpoints. 
-        - Auf der Ausgabzeile soll in Grün folgende Ausgabe gegben werden: Die Ergebnisse wurden im folgenden Ordner gespeichert: 
-        + Pfad zum Ordner. 
-        
-        Alle funktionn sollen in einer Model-Datei compute_grids.py gespichert werden und dann in den Controller importiert werden.
+        if not validOverlap:
+            self._set_status_text("The Overlap of the High Res and SD OCT Segmentation "
+                                  "is not good enough.", kind="error")
+            return
+        else:
+            result = build_mp_point_sets(hr_seg_mp, sd_seg_mp)
+            all_points_px = result["all_pts_px"]
+            all_points_deg = result["all_pts_deg"]
+            """
+            Wenn das abgeschlossen ist, öffnt sich ein Fnster. bei diesem Explorer-Auswahl fnster soll man auswähln, 
+            in welchen Ornder die Ergebniss gespeichert werden sollen. 
+            Wenn dann auf "auswählen" bzw. "okay" gdrückt wird, dann passirt folgndes: 
+            - In dem MP Bild werdn eingzeichnet: Alle Testpunkt der Dilatationen. 
+            - Zeitgleich gespeichert werden in dem ausgwählten Ordner: 
+                - Die erzeugte XML-Datei mit den Testpunktn im Format ID_XML_Testpoints (ID = die Zahl vom Eingabefeld eingelesen)
+                - Das Mikroperimetriebild mit dn Testpunktn zur späteren Visualisirung im Namensformat ID_MP_Testpoints. 
+            - Auf der Ausgabzeile soll in Grün folgende Ausgabe gegben werden: Die Ergebnisse wurden im folgenden Ordner gespeichert: 
+            + Pfad zum Ordner. 
         """
 
     def _on_compute_reset_clicked(self):
