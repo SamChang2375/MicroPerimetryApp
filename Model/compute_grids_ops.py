@@ -670,7 +670,6 @@ def build_mp_point_sets(
         "all_pts_deg": all_pts_deg,             # (N,2)
     }
 
-
 def _bridge_gaps_between_points(existing_pts, allowed_mask, *,
                                 gap_min=16.0, gap_max=24.0,
                                 min_clear=8.0,             # neuer Punkt muss mind. so weit weg von allen sein

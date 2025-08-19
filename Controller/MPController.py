@@ -562,7 +562,9 @@ class ImageController(QObject):
                                   "is not good enough.", kind="error")
             return
         else:
+            print("Vor Analyse")
             result = build_mp_point_sets(hr_seg_mp, sd_seg_mp)
+            print("Nach Analyse")
             all_points_px = result["all_pts_px"]
             all_points_deg = result["all_pts_deg"]
             """
