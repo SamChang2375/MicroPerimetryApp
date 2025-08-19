@@ -13,9 +13,13 @@ class ResultDialog(QDialog):
                  hr_seg_px, sd_seg_px):  # list[(x,y)], list[(x,y)]
         super().__init__(parent)
         self.setWindowTitle("Microperimetry Grid Computing Result")
-        # 80% Bildschirmgröße
+
+        # Bildschirmgeometrie holen
         scr = QApplication.primaryScreen().availableGeometry()
-        self.resize(int(scr.width()*0.8), int(scr.height()*0.8))
+        w, h = int(scr.width() * 0.8), int(scr.height() * 0.8)
+
+        # Fenster strikt auf 80% festsetzen
+        self.setFixedSize(w, h)
 
         self._img = qimg_mp
         self._points = points_px
