@@ -592,6 +592,7 @@ class ImageController(QObject):
             if drop:
                 try:
                     drop.clear_segmentation()
+                    drop.clear_segmentation2()
                     drop.clear_points()
                     drop.clear_image()
                     drop.set_draw_cursor(False)

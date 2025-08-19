@@ -1,5 +1,6 @@
 # Model/compute_grids.py
 from __future__ import annotations
+import math
 import numpy as np
 import cv2
 from typing import List, Tuple, Optional
@@ -55,7 +56,6 @@ def correct_segmentation(
        - Schneide überhängende Teile ab
        - Verbinde die Enden mit einer geraden Linie
     """
-    import math
 
     if not pts or len(pts) < 2:
         return None if not auto_close else list(pts)
@@ -418,10 +418,6 @@ def check_segmentation_overlap(
         return ok, {'score': score, 'area_small': area_small, 'area_A': area_A, 'area_B': area_B}
     return ok
 
-import numpy as np
-import cv2
-import matplotlib.pyplot as plt
-
 # ---------- helpers: dünnen Kandidatenpunkte mit Mindestabstand, existierende Punkte bleiben ----------
 def _poisson_thin_with_obstacles(cands, r, fixed, W, H):
     cands = np.asarray(cands, float).reshape(-1, 2)
@@ -459,7 +455,7 @@ def _poisson_thin_with_obstacles(cands, r, fixed, W, H):
         if _ok(p):
             kept.append(p); _put(p)
 
-    return np.asarray(kept, float)
+    return np.asarray(kept, float).reshape(-1, 2)
 
 
 # ---------- optionaler „Greedy“ Post-Fill für 1–5 Zusatzpunkte in großen Löchern ----------
@@ -629,6 +625,8 @@ def build_mp_point_sets(
     fixed_pts = np.vstack([sd_outline_pts, outer_pts]) if (sd_outline_pts.size or outer_pts.size) else np.empty((0, 2), float)
     if enforce_min_dist and inner_cands.size:
         inner_pts = _poisson_thin_with_obstacles(inner_cands, r=step, fixed=fixed_pts, W=W, H=H)
+        if inner_pts.size == 0:
+            inner_pts = np.empty((0, 2), float)
     else:
         inner_pts = inner_cands
 
@@ -641,7 +639,10 @@ def build_mp_point_sets(
         extra = _post_fill_with_dt(current, allowed_mask, step=step,
                                    max_add=post_fill_max_add, r_fill_ratio=0.7)
         if extra.size:
-            inner_pts = np.vstack([inner_pts, extra])
+            if inner_pts.size == 0:
+                inner_pts = extra
+            else:
+                inner_pts = np.vstack([inner_pts, extra])
 
 
     # ---- alles zusammensetzen ----
@@ -669,6 +670,7 @@ def build_mp_point_sets(
         "all_pts_px": all_pts_px,               # (N,2)
         "all_pts_deg": all_pts_deg,             # (N,2)
     }
+
 
 def _bridge_gaps_between_points(existing_pts, allowed_mask, *,
                                 gap_min=16.0, gap_max=24.0,
