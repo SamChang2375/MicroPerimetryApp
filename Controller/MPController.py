@@ -1,14 +1,24 @@
 from __future__ import annotations
+
+import os
 from typing import Dict
+
+from PyQt6.QtWidgets import QFileDialog
+
 from Model.image_ops import apply_contrast_brightness
-from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool, QRunnable, QTimer
+from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool, QRunnable, QTimer, QDir
 from PyQt6.QtGui import QImage, QImageReader
 from Controller.enums import MouseStatus
 from Model.image_state import ImageState
 from Model.seg_ops import deform_points_gaussian, laplacian_smooth, build_edit_window, nearest_seg_point_index
 from Model.image_ops import apply_contrast_brightness, auto_crop_bars, numpy_rgb_to_qimage
-from Model.compute_grids_ops import extract_segmentation_line, correct_segmentation, sort_points_via_center_overlay, create_homography_matrix, transform_coordinates, compose, order_points_by_min_distance, check_segmentation_overlap, build_mp_point_sets
+from Model.compute_grids_ops import extract_segmentation_line, correct_segmentation, sort_points_via_center_overlay, \
+    create_homography_matrix, transform_coordinates, compose, order_points_by_min_distance, check_segmentation_overlap, \
+    build_mp_point_sets, write_points_xml
 import cv2
+
+from View.result_dialogue import ResultDialog
+
 
 # Worker infrastructure: Needed because it allows parallel threading parallel to the GUI-Thread by
 # performing calculations in the background.
@@ -541,7 +551,6 @@ class ImageController(QObject):
         # Berechne die Homographie-Matrizen
         H_hr2sd = create_homography_matrix(hr.pts_points, sd.pts_points)
         H_sd2mp = create_homography_matrix(sd.pts_points, mp.pts_points)
-        print(H_sd2mp)
 
         # Transformiere alle Koordinaten ins MP-Koordinatensystem und zeige sie an:
         H_hr2mp = compose(H_sd2mp, H_hr2sd)
@@ -562,22 +571,54 @@ class ImageController(QObject):
                                   "is not good enough.", kind="error")
             return
         else:
-            print("Vor Analyse")
             result = build_mp_point_sets(hr_seg_mp, sd_seg_mp)
-            print("Nach Analyse")
             all_points_px = result["all_pts_px"]
             all_points_deg = result["all_pts_deg"]
-            """
-            Wenn das abgeschlossen ist, öffnt sich ein Fnster. bei diesem Explorer-Auswahl fnster soll man auswähln, 
-            in welchen Ornder die Ergebniss gespeichert werden sollen. 
-            Wenn dann auf "auswählen" bzw. "okay" gdrückt wird, dann passirt folgndes: 
-            - In dem MP Bild werdn eingzeichnet: Alle Testpunkt der Dilatationen. 
-            - Zeitgleich gespeichert werden in dem ausgwählten Ordner: 
-                - Die erzeugte XML-Datei mit den Testpunktn im Format ID_XML_Testpoints (ID = die Zahl vom Eingabefeld eingelesen)
-                - Das Mikroperimetriebild mit dn Testpunktn zur späteren Visualisirung im Namensformat ID_MP_Testpoints. 
-            - Auf der Ausgabzeile soll in Grün folgende Ausgabe gegben werden: Die Ergebnisse wurden im folgenden Ordner gespeichert: 
-            + Pfad zum Ordner. 
-        """
+
+            # ----- Ergebnis-Dialog anzeigen (MP-Panel bleibt unverändert) -----
+            mp_qimg = self.states["micro"].original
+            dlg = ResultDialog(self.view, mp_qimg, all_points_px, hr_seg_mp, sd_seg_mp)
+            dlg.setModal(False)
+            dlg.show()
+
+            # ----- Ordnerauswahl NACHDEM der Dialog sichtbar ist -----
+            out_dir = QFileDialog.getExistingDirectory(
+                self.view,
+                "Choose File Directory to store the Grid Testpoint Results",
+                QDir.homePath(),
+                QFileDialog.Option.ShowDirsOnly
+            )
+
+            if out_dir:
+                # Dateinamen aus Patient-ID bauen (patient_id kommt bei dir aus dem Eingabefeld)
+                xml_path = os.path.join(out_dir, f"{patient_id}_XML_Testpoints.xml")
+                png_path = os.path.join(out_dir, f"{patient_id}_MP_Testpoints.png")
+
+                # 1) XML schreiben (Gradwerte!)
+                try:
+                    write_points_xml(all_points_deg, xml_path, grid_name="3° Circle plus center", precision=3)
+                except Exception as e:
+                    self._set_status_text(f"XML Save failed: {e}", kind="error")
+                    return
+
+                # 2) Annotiertes MP-Bild speichern (identisch zur Dialoganzeige)
+                try:
+                    dlg.save_annotated_png(png_path)
+                except Exception as e:
+                    self._set_status_text(f"PNG Save failed: {e}", kind="error")
+                    return
+
+                # 3) Erfolgsmeldung grün
+                self._set_status_text(
+                    f"The Results were stored in the following file directory: {out_dir}",
+                    kind="ok"
+                )
+            else:
+                # kein Ordner gewählt -> nur Info
+                self._set_status_text(
+                    "Save was canceled, result dialogue window stays open",
+                    kind="info"
+                )
 
     def _on_compute_reset_clicked(self):
         # 1) Laufende Debounce-Timer stoppen

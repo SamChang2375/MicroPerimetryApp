@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import numpy as np
 import cv2
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Iterable
 
 # Alternative Lösung mit Konturerkennung
 def extract_segmentation_line(
@@ -794,3 +794,51 @@ def _post_fill_with_dt(current_pts, allowed_mask, *, step, max_add=3, r_fill_rat
         cv2.circle(occ, (cx, cy), rad, 255, -1, lineType=cv2.LINE_8)
 
     return np.asarray(added, float)
+
+# --- XML Writer: Punkte in GRAD -> XML ----------------------------------------
+from typing import Iterable
+import numpy as np
+
+def _escape_attr(s: str) -> str:
+    """
+    XML-Attribut escapen. Unterstützt '°' ODER bereits '&#176;'.
+    Sorgt dafür, dass Gradzeichen als &#176; im XML steht.
+    """
+    s = str(s).replace('&#176;', '°')
+    s = (s.replace('&', '&amp;')
+           .replace('<', '&lt;')
+           .replace('>', '&gt;')
+           .replace('"', '&quot;')
+           .replace("'", '&apos;'))
+    s = s.replace('°', '&#176;')
+    return s
+
+def write_points_xml(points_deg: Iterable[Iterable[float]],
+                     xml_path: str,
+                     grid_name: str = '3° Circle plus center',
+                     precision: int = 3) -> None:
+    """
+    Schreibt die MP-Stimulusliste in eine Mit-Patterns-XML.
+    Erwartet 'points_deg' als (N,2)-Array/Liste in Grad (x_deg, y_deg).
+    """
+    pts = np.asarray(points_deg, dtype=float).reshape(-1, 2)
+
+    lines = []
+    lines.append('<?xml version="1.0" encoding="UTF-8"?>')
+    lines.append('<!DOCTYPE MitPatterns>')
+    lines.append('<patterns>')
+    lines.append('<pattern_expert>')
+    lines.append(f'<Grid name="{_escape_attr(grid_name)}">')
+
+    fmt = f'{{:.{precision}f}}'
+    for i, (xd, yd) in enumerate(pts, start=1):
+        lines.append(
+            f'  <Stimulus id="{i}" x_deg="{fmt.format(xd)}" y_deg="{fmt.format(yd)}" />'
+        )
+
+    lines.append('</Grid>')
+    lines.append('</pattern_expert>')
+    lines.append('</patterns>')
+
+    with open(xml_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
